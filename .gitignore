@@ -1,0 +1,16 @@
+# 配置文件（含密钥，不上传）
+config.json
+
+# 环境文件（含密钥）
+.env
+
+# 依赖
+node_modules/
+
+# 日志
+*.log
+logs/
+
+# 系统文件
+.DS_Store
+Thumbs.db

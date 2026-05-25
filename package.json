@@ -1,0 +1,14 @@
+{
+  "name": "claudecode-wecom-channel",
+  "version": "1.0.0",
+  "description": "企业微信 ↔ Claude Code 双向聊天代理，通过 claude -p --bare 共享认证",
+  "main": "main.js",
+  "scripts": {
+    "start": "node main.js"
+  },
+  "keywords": ["wecom", "claude", "chatbot", "claude-code"],
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
