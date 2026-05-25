@@ -4,7 +4,7 @@
  * 参考：clawrelay-wecom-server/src/core/session_manager.py
  *
  * 会话 key 规则：
- * - 群聊: `group:<chatid>`
+ * - 群聊: `group:<chatid>:<user_id>` — 每人独立线程
  * - 私聊: `private:<user_id>`
  *
  * 每个会话维护一个 messages 数组（对话历史），2h 无活动自动过期。
@@ -38,9 +38,9 @@ class SessionManager {
   /**
    * 添加消息到会话历史
    */
-  addMessage(key, role, content) {
+  addMessage(key, role, content, userId = '', userName = '') {
     const session = this.getSession(key);
-    session.messages.push({ role, content });
+    session.messages.push({ role, content, userId, userName });
     // 限制历史长度，防止上下文过长
     if (session.messages.length > 50) {
       session.messages = session.messages.slice(-40);
@@ -70,9 +70,14 @@ class SessionManager {
 
   /**
    * 生成会话 key
+   * - 群聊: group:<chatid>:<user_id> — 每人独立线程
+   * - 私聊: private:<user_id>
    */
-  static makeKey(chatType, identifier) {
-    return chatType === 'group' ? `group:${identifier}` : `private:${identifier}`;
+  static makeKey(chatType, identifier, userId = '') {
+    if (chatType === 'group') {
+      return `group:${identifier}:${userId}`;
+    }
+    return `private:${identifier}`;
   }
 
   /**

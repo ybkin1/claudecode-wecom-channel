@@ -170,11 +170,12 @@ class MessageDispatcher {
   // ─── 内部方法 ───
 
   async _dispatchText(userId, content, chatType, identifier, msgId) {
-    const sessionKey = SessionManager.makeKey(chatType, identifier);
+    // 群聊每人独立线程，私聊每人独立线程
+    const sessionKey = SessionManager.makeKey(chatType, identifier, userId);
 
     // 并发锁：同一会话同时只处理一条消息
     if (this._processingSessions.has(sessionKey)) {
-      console.log(`⏳ 会话 ${sessionKey} 正在处理中，跳过`);
+      console.log(` 会话 ${sessionKey} 正在处理中，跳过`);
       return;
     }
 
@@ -218,8 +219,10 @@ class MessageDispatcher {
     };
 
     try {
+      // userId 作为显示名（企业微信不提供真实姓名）
       const result = await this.orchestrator.handleMessage(
         userId,
+        userId, // userName
         content,
         sessionKey,
         onStreamDelta

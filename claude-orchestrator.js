@@ -77,24 +77,24 @@ class ClaudeOrchestrator {
   /**
    * 处理文本消息
    */
-  async handleMessage(userId, message, sessionKey, onStreamDelta) {
+  async handleMessage(userId, userName, message, sessionKey, onStreamDelta) {
     const startTime = Date.now();
 
     try {
       // 安全过滤
       const sanitizedMessage = this._sanitizeInput(message);
 
-      // 构建完整对话历史
+      // 构建完整对话历史（含用户身份）
       const messages = this.sessionManager.getMessages(sessionKey);
-      messages.push({ role: 'user', content: sanitizedMessage });
+      messages.push({ role: 'user', content: sanitizedMessage, userId, userName });
 
-      console.log(`[Claude] 处理: user=${userId}, session=${sessionKey}`);
+      console.log(`[Claude] 处理: user=${userId}(${userName}), session=${sessionKey}`);
 
       // 调用 claude -p
-      const result = await this._runClaudePrompt(messages, onStreamDelta);
+      const result = await this._runClaudePrompt(messages, userName, onStreamDelta);
 
       // 保存会话历史
-      this.sessionManager.addMessage(sessionKey, 'user', sanitizedMessage);
+      this.sessionManager.addMessage(sessionKey, 'user', sanitizedMessage, userId, userName);
       this.sessionManager.addMessage(sessionKey, 'assistant', result);
 
       const latency = Date.now() - startTime;
@@ -111,7 +111,7 @@ class ClaudeOrchestrator {
   /**
    * 运行 claude -p --bare
    */
-  _runClaudePrompt(messages, onStreamDelta) {
+  _runClaudePrompt(messages, currentUserName, onStreamDelta) {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         if (proc) {
@@ -121,8 +121,8 @@ class ClaudeOrchestrator {
         reject(new Error('Claude 响应超时 (2min)'));
       }, 120000);
 
-      // 构建 prompt
-      const prompt = this._buildPrompt(messages);
+      // 构建 prompt（含用户身份）
+      const prompt = this._buildPrompt(messages, currentUserName);
 
       // 构建参数
       const args = [
@@ -210,15 +210,16 @@ class ClaudeOrchestrator {
   }
 
   /**
-   * 构建 prompt（拼接对话历史）
+   * 构建 prompt（拼接对话历史 + 用户身份标识）
    */
-  _buildPrompt(messages) {
+  _buildPrompt(messages, currentUserName) {
     const parts = [];
     for (const msg of messages) {
       if (msg.role === 'user') {
-        parts.push(`用户: ${msg.content}`);
+        const displayName = msg.userName || msg.userId || '用户';
+        parts.push(`[${displayName}]: ${msg.content}`);
       } else if (msg.role === 'assistant') {
-        parts.push(`助手: ${msg.content}`);
+        parts.push(`[助手]: ${msg.content}`);
       }
     }
     return parts.join('\n\n');
