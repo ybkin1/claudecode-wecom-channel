@@ -12,6 +12,7 @@
  */
 
 const { SessionManager } = require('./session-manager.js');
+const { ConcurrencyLimiter } = require('./concurrency-limiter.js');
 
 // 内置指令
 const COMMANDS = {
@@ -86,6 +87,12 @@ class MessageDispatcher {
     // 入站消息内容去重（WeCom 可能用不同 msgid 发相同内容）
     this._recentInbound = new Map(); // "chattype+from+hash" → timestamp
     this._inboundDedupWindow = 10000; // 10s 内容去重窗口
+
+    // 并发控制器（限制同时处理的请求数，超出的排队）
+    this._concurrencyLimiter = new ConcurrencyLimiter({
+      maxConcurrent: config.maxConcurrent || 3,
+      queueSize: config.queueSize || 50,
+    });
 
     console.log('📨 消息分发器已初始化');
   }
@@ -182,18 +189,25 @@ class MessageDispatcher {
     this._processingSessions.add(sessionKey);
 
     try {
-      // 检查指令
+      // 检查指令（指令不走并发队列，立即回复）
       const commandResult = this._checkCommand(content.trim(), sessionKey);
       if (commandResult) {
         await this._sendReply(identifier, commandResult);
         return;
       }
 
-      // 流式回复
-      await this._streamReply(userId, content, sessionKey, identifier);
+      // 通过并发控制器排队处理
+      await this._concurrencyLimiter.submit(
+        () => this._streamReply(userId, content, sessionKey, identifier),
+        { userId, sessionKey, chatType }
+      );
     } catch (err) {
       console.error(`[Dispatcher] 处理失败: ${err.message}`);
-      await this._sendReply(identifier, `❌ 处理失败: ${err.message}`);
+      if (err.message.includes('队列已满')) {
+        await this._sendReply(identifier, ` 当前请求较多，请稍后再试`);
+      } else {
+        await this._sendReply(identifier, `❌ 处理失败: ${err.message}`);
+      }
     } finally {
       this._processingSessions.delete(sessionKey);
     }

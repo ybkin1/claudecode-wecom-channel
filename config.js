@@ -53,6 +53,10 @@ const DEFAULTS = {
   allowedUsers: process.env.ALLOWED_USERS ? process.env.ALLOWED_USERS.split(',').map(s => s.trim()).filter(Boolean) : [],
   groupChatEnabled: process.env.GROUP_CHAT_ENABLED !== 'false',
   privateChatEnabled: process.env.PRIVATE_CHAT_ENABLED !== 'false',
+
+  // 并发控制
+  maxConcurrent: parseInt(process.env.MAX_CONCURRENT) || 3,
+  queueSize: parseInt(process.env.QUEUE_SIZE) || 50,
 };
 
 function loadConfig() {

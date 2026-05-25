@@ -40,6 +40,7 @@ async function main() {
   console.log(`📡 WeCom: ${config.wsUrl}`);
   console.log(`🧠 Claude API: ${config.apiBase || 'default'}`);
   console.log(`💬 模型: ${config.model}`);
+  console.log(` 并发: max=${config.maxConcurrent || 3}, queue=${config.queueSize || 50}`);
   console.log('');
 
   // 初始化核心组件
