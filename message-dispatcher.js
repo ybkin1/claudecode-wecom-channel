@@ -229,7 +229,8 @@ class MessageDispatcher {
         fileInfo.url,
         fileInfo.fileName,
         fileInfo.mimeHint,
-        fileInfo.aeskey
+        fileInfo.aeskey,
+        userId  // 按用户分目录存储
       );
 
       // 3. 构建 Claude 上下文消息
@@ -337,8 +338,8 @@ class MessageDispatcher {
           for (var fi = 0; fi < parsed.files.length; fi++) {
             const f = parsed.files[fi];
             try {
-              // 写入沙箱
-              const entry = await this.fileBroker.writeContent(f.extension, f.content, { originalName: f.filename });
+              // 写入沙箱（按用户分目录）
+              const entry = await this.fileBroker.writeContent(f.extension, f.content, { originalName: f.filename }, userId);
 
               // 通过 WebSocket 三阶段上传获取 media_id
               const mediaType = this._getMediaType(f.extension);

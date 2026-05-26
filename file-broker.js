@@ -86,9 +86,24 @@ class FileBroker {
    * @returns {Promise<FileEntry>}
    */
   /**
+   * 获取指定用户的沙箱子目录路径（用于 Claude --add-dir）
+   * @param {string} userId — 用户标识（WeCom userid 或 sessionKey）
+   * @returns {string} 用户专属沙箱子目录的绝对路径
+   */
+  getUserDir(userId) {
+    var safeName = this._sanitizeUserId(userId);
+    var userDir = path.join(this.sandboxDir, safeName);
+    if (!fs.existsSync(userDir)) {
+      fs.mkdirSync(userDir, { recursive: true });
+    }
+    return userDir;
+  }
+
+  /**
+   * @param {string} userId — 用户标识（用于子目录隔离）
    * @param {string} [aeskey] — WeCom 文件回调中的 AES-256-CBC 解密密钥 (base64)，有则解密
    */
-  async downloadAndStore(url, originalFilename, mimeHint, aeskey) {
+  async downloadAndStore(url, originalFilename, mimeHint, aeskey, userId) {
     // 提取扩展名（接收场景宽松，不检查白名单）
     var extension = '';
     if (originalFilename) {
@@ -101,7 +116,13 @@ class FileBroker {
       extension = '.bin';
     }
 
-    var sandboxPath = this._generateSandboxPath(extension);
+    var sandboxPath = this._generateSandboxPath(extension, userId);
+
+    // 确保子目录存在
+    var sandboxDir = path.dirname(sandboxPath);
+    if (!fs.existsSync(sandboxDir)) {
+      fs.mkdirSync(sandboxDir, { recursive: true });
+    }
 
     try {
       var content = await this._httpDownload(url);
@@ -143,13 +164,20 @@ class FileBroker {
    * @param {string} extension — 文件扩展名（含点，如 '.json'）
    * @param {string} content — 文件内容（UTF-8）
    * @param {Object} [metadata] — 额外元数据
+   * @param {string} [userId] — 用户标识（用于子目录隔离）
    * @returns {Promise<FileEntry>}
    */
-  async writeContent(extension, content, metadata) {
+  async writeContent(extension, content, metadata, userId) {
     // 扩展名白名单校验
     var validatedExt = this._validateExtension(extension);
 
-    var sandboxPath = this._generateSandboxPath(validatedExt);
+    var sandboxPath = this._generateSandboxPath(validatedExt, userId);
+
+    // 确保子目录存在
+    var sandboxDir = path.dirname(sandboxPath);
+    if (!fs.existsSync(sandboxDir)) {
+      fs.mkdirSync(sandboxDir, { recursive: true });
+    }
 
     try {
       fs.writeFileSync(sandboxPath, content, 'utf8');
@@ -281,7 +309,7 @@ class FileBroker {
   }
 
   /**
-   * 清理所有沙箱文件（进程退出时调用）
+   * 清理所有沙箱文件（进程退出时调用，递归清理子目录）
    *
    * 安全：跳过符号链接，只删除普通文件
    */
@@ -289,38 +317,47 @@ class FileBroker {
     console.log('[FileBroker] 清理所有沙箱文件...');
 
     // 清除所有 TTL 定时器
-    for (var _i = 0, _keys = Array.from(this._ttlTimers.keys()), _len = _keys.length; _i < _len; _i++) {
-      var k = _keys[_i];
-      clearTimeout(this._ttlTimers.get(k));
+    var keys = Array.from(this._ttlTimers.keys());
+    for (var i = 0; i < keys.length; i++) {
+      clearTimeout(this._ttlTimers.get(keys[i]));
     }
     this._ttlTimers.clear();
 
-    // 删除沙箱目录下所有普通文件
-    if (fs.existsSync(this.sandboxDir)) {
-      try {
-        var entries = fs.readdirSync(this.sandboxDir);
-        for (var i = 0; i < entries.length; i++) {
-          var fullPath = path.join(this.sandboxDir, entries[i]);
-          try {
-            var stat = fs.lstatSync(fullPath);
-            if (stat.isSymbolicLink()) {
-              console.warn('[FileBroker] cleanupAll: 跳过符号链接 ' + fullPath);
-              continue;
-            }
-            if (stat.isFile()) {
-              fs.unlinkSync(fullPath);
-              console.log('[FileBroker] 已清理: ' + fullPath);
-            }
-          } catch (e) {
-            console.warn('[FileBroker] 删除失败: ' + fullPath + ': ' + e.message);
-          }
-        }
-      } catch (e) {
-        console.warn('[FileBroker] 读取沙箱目录失败: ' + e.message);
-      }
-    }
+    // 递归删除沙箱目录下所有普通文件
+    this._cleanupDir(this.sandboxDir);
 
     console.log('[FileBroker] 清理完成');
+  }
+
+  /**
+   * 递归清理目录（跳过符号链接）
+   */
+  _cleanupDir(dir) {
+    if (!fs.existsSync(dir)) return;
+    try {
+      var entries = fs.readdirSync(dir);
+      for (var i = 0; i < entries.length; i++) {
+        var fullPath = path.join(dir, entries[i]);
+        try {
+          var stat = fs.lstatSync(fullPath);
+          if (stat.isSymbolicLink()) {
+            console.warn('[FileBroker] cleanupAll: 跳过符号链接 ' + fullPath);
+            continue;
+          }
+          if (stat.isDirectory()) {
+            this._cleanupDir(fullPath);
+            try { fs.rmdirSync(fullPath); } catch (e) { /* not empty, skip */ }
+          } else if (stat.isFile()) {
+            fs.unlinkSync(fullPath);
+            console.log('[FileBroker] 已清理: ' + fullPath);
+          }
+        } catch (e) {
+          console.warn('[FileBroker] 删除失败: ' + fullPath + ': ' + e.message);
+        }
+      }
+    } catch (e) {
+      console.warn('[FileBroker] 读取目录失败: ' + dir + ': ' + e.message);
+    }
   }
 
   // ══════════════════════════════════════════════════
@@ -405,16 +442,19 @@ class FileBroker {
   // ══════════════════════════════════════════════════
 
   /**
-   * 生成沙箱内的随机文件路径（UUID 命名）
-   *
-   * 安全保证：文件名使用 crypto.randomUUID()，用户不可控
+   * 生成沙箱内的随机文件路径（UUID 命名 + 用户子目录隔离）
    *
    * @param {string} extension — 文件扩展名（含点，如 '.json'）
+   * @param {string} [userId] — 用户标识，有则写入用户专属子目录
    * @returns {string} 完整沙箱路径
    */
-  _generateSandboxPath(extension) {
+  _generateSandboxPath(extension, userId) {
     var uuid = crypto.randomUUID();
     var filename = uuid + extension;
+    if (userId) {
+      var safeName = this._sanitizeUserId(userId);
+      return path.join(this.sandboxDir, safeName, filename);
+    }
     return path.join(this.sandboxDir, filename);
   }
 
@@ -643,6 +683,15 @@ class FileBroker {
   /**
    * 确保沙箱目录存在且安全（非符号链接）
    */
+  /**
+   * 净化 userId 为安全的目录名（防路径遍历）
+   */
+  _sanitizeUserId(userId) {
+    if (!userId) return 'default';
+    // 只保留字母数字和连字符，移除路径危险字符
+    return String(userId).replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 64) || 'default';
+  }
+
   _ensureSandboxDir() {
     if (!fs.existsSync(this.sandboxDir)) {
       fs.mkdirSync(this.sandboxDir, { recursive: true });

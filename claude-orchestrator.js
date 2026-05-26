@@ -47,7 +47,10 @@ class ClaudeOrchestrator {
       messages.push({ role: 'user', content: sanitizedMessage, userId, userName });
       console.log('[Claude] 处理: user=' + userId + '(' + userName + '), session=' + sessionKey + (fileContext ? ', hasFileContext' : ''));
 
-      const result = await this._runClaudePrompt(messages, userName, onStreamDelta);
+      // 计算用户专属沙箱子目录
+    var userSandboxDir = this.config.sandboxDir ? path.join(this.config.sandboxDir, this._sanitizeForDir(userId)) : null;
+
+    const result = await this._runClaudePrompt(messages, userName, onStreamDelta, userSandboxDir);
 
       this.sessionManager.addMessage(sessionKey, 'user', sanitizedMessage, userId, userName);
       this.sessionManager.addMessage(sessionKey, 'assistant', result);
@@ -61,7 +64,7 @@ class ClaudeOrchestrator {
     }
   }
 
-  _runClaudePrompt(messages, currentUserName, onStreamDelta) {
+  _runClaudePrompt(messages, currentUserName, onStreamDelta, sandboxDir) {
     var self = this;
     return new Promise(function(resolve, reject) {
       var prompt = self._buildPrompt(messages, currentUserName);
@@ -71,13 +74,17 @@ class ClaudeOrchestrator {
         reject(new Error('Claude 响应超时 (5min)'));
       }, 300000);
 
-      var sandboxDir = self.config.sandboxDir || '/tmp/wecom-sandbox';
+      var effectiveSandbox = sandboxDir || self.config.sandboxDir || '/tmp/wecom-sandbox';
+      // 确保子目录存在
+      if (!require('fs').existsSync(effectiveSandbox)) {
+        require('fs').mkdirSync(effectiveSandbox, { recursive: true });
+      }
       var args = [
         '-p', prompt,
         '--settings', path.join(__dirname, 'settings.json'),
         '--allowedTools', 'Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch',
         '--add-dir', '/opt/knowledge-base',
-        '--add-dir', sandboxDir,
+        '--add-dir', effectiveSandbox,
         '--no-session-persistence',
         '--append-system-prompt', SYSTEM_PROMPT,
       ];
@@ -148,6 +155,14 @@ class ClaudeOrchestrator {
       }
     }
     return parts.join('\n\n');
+  }
+
+  /**
+   * 净化用户标识为安全目录名
+   */
+  _sanitizeForDir(str) {
+    if (!str) return 'default';
+    return String(str).replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 64) || 'default';
   }
 
   _sanitizeInput(text) {
