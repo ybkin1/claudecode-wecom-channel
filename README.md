@@ -19,38 +19,82 @@
 
 | 限制 | 原因 | 说明 |
 |------|------|------|
-| ❌ **修改/写入文件** | 安全隔离（`--disallowed-tools`）| 无法创建、编辑、删除知识库中的任何文件 |
+| ❌ **修改/写入文件** | 安全隔离（`--allowedTools`）| 无法创建、编辑、删除知识库中的任何文件 |
 | ❌ **执行命令** | 安全隔离 | 无法运行 shell 命令、脚本、编译代码 |
-| ❌ **接收文件/图片** | 仅支持文本消息 | 用户发送的图片、文件会被忽略 |
-| ❌ **发送文件/图片** | 仅回复 markdown 文本 | 无法向用户推送文件或图片 |
+| ✅ **接收文件/图片** | FileBroker AES 解密 + 沙箱 | 图片和文件自动下载、AES-256-CBC 解密，Claude Read 工具可读 |
+| ✅ **发送文件/图片** | [FILE_OUTPUT] 协议 + WS 上传 | 支持 Claude 生成 JSON/CSV 等文件并发送给用户 |
 | ❌ **修改配置** | 安全隔离 + 系统提示词 | 无法修改 Claude Code 设置、系统配置 |
 | ❌ **调用外部 API** | 无 Agent/Bash 权限 | 无法访问互联网、调用其他服务 |
 
 ### 工具权限矩阵
 
 ```
-✅ Read      — 读取文件（知识库文档、代码、配置）
+Claude 子进程:
+✅ Read      — 读取文件（知识库 + 沙箱 /tmp/wecom-sandbox）
 ✅ Grep      — 内容搜索（正则匹配、关键词检索）
 ✅ Glob      — 文件名匹配（按模式搜索文件）
 ✅ WebSearch — 网络搜索（需要时可查最新信息）
 ✅ WebFetch  — 网页内容获取（读取在线文档）
-❌ Write     — 写入文件
+❌ Write     — 写入文件（由 FileBroker 代理）
 ❌ Edit      — 编辑文件
 ❌ Bash      — 执行命令
 ❌ Agent     — 启动子 Agent
-❌ NotebookEdit — 编辑 Notebook
+
+FileBroker (Node.js 层):
+✅ writeContent  — 沙箱内受限写入（UUID 命名 + 扩展名白名单 + TTL 自动清理）
+✅ downloadAndStore — HTTP 下载 + AES-256-CBC 解密 + 存入沙箱
+❌ 路径遍历攻击   — resolve+realpath+startsWith 拦截
+❌ 符号链接攻击   — fs.realpathSync 解析
 ```
 
 ## 架构
 
 ```
-┌──────────────┐     WebSocket      ┌─────────────────┐     spawn CLI     ┌──────────────┐
-│  企业微信用户  │ ◄─────────────────► │  Node.js 代理     │ ◄───────────────► │  Claude Code │
-│              │   msg_callback     │                 │   claude -p      │  (只读沙箱)   │
-│  群聊 / 私聊  │   send_msg (推送)   │  消息分发 + 会话  │   --bare         │              │
-└──────────────┘                    │  并发控制        │                  └──────────────┘
-                                    └─────────────────┘
+┌──────────────┐     WebSocket      ┌──────────────────────────────────────┐     spawn CLI     ┌──────────────┐
+│  企业微信用户  │ ◄─────────────────► │        Node.js 代理                  │ ◄───────────────► │  Claude Code │
+│              │   msg_callback     │                                    │   claude -p      │  (只读)       │
+│  群聊 / 私聊  │   send_msg (推送)   │  ┌──────────┐  ┌────────────────┐  │                  │  Read/Grep    │
+│  + 文件/图片  │   upload_media     │  │ 消息分发器 │  │  FileBroker    │  │  --add-dir       │  Glob/Web*    │
+└──────────────┘                    │  │ 会话管理  │  │  沙箱安全读写   │  │  sandbox         │              │
+                                    │  │ 并发控制  │  │  AES解密/上传  │  │                  └──────────────┘
+                                    │  └──────────┘  └────────┬───────┘  │
+                                    │                         │          │
+                                    │              /tmp/wecom-sandbox/     │
+                                    │              (UUID命名+TTL清理)      │
+                                    └──────────────────────────────────────┘
 ```
+
+### FileBroker 安全沙箱
+
+Claude 子进程**不能写入文件**，但需要收发文件时，由 FileBroker 代理所有写操作：
+
+| 安全层 | 机制 | 说明 |
+|--------|------|------|
+| **路径隔离** | `/tmp/wecom-sandbox/` | 所有文件操作限定在沙箱目录内 |
+| **路径遍历防御** | resolve + realpath + startsWith | 拒绝 `..`、符号链接、跨目录访问 |
+| **文件名不可控** | `crypto.randomUUID()` | 用户无法猜测或覆盖文件名 |
+| **扩展名白名单** | `.md/.txt/.json/.csv` 等 | `writeContent` 拒绝 `.exe/.sh/.php` 等危险扩展名 |
+| **TTL 自动清理** | 默认 5 分钟 | 超时自动 `fs.unlink`，防止磁盘堆积 |
+| **文件大小限制** | 默认 10MB | 拒绝超大文件，防止内存耗尽 |
+| **AES 解密** | AES-256-CBC | WeCom 文件回调自动解密（`aeskey` 字段） |
+| **符号链接防御** | `fs.realpathSync` | 所有路径解析后二次验证 |
+
+### FILE_OUTPUT 协议
+
+Claude 生成的回复中可以嵌入文件，系统会自动提取并发送给用户：
+
+```
+[FILE_OUTPUT:report.json]
+{"total": 100, "items": ["a", "b", "c"]}
+[/FILE_OUTPUT]
+```
+
+协议规则：
+- 文件名必须包含允许的扩展名（`.json/.csv/.txt/.md` 等）
+- 每个 `[FILE_OUTPUT]...[/FILE_OUTPUT]` 块生成一个独立文件
+- 图片类文件（`.png/.jpg`）作为 image 消息发送
+- 非图片文件（`.json/.csv/.md`）作为 file 消息发送
+- 块外文本正常作为 markdown 回复
 
 ### 消息处理全链路
 
@@ -62,7 +106,10 @@
   │
   ├─→ msgId 去重检查（30s 窗口）→ 重复则跳过
   ├─→ 白名单检查 → 非白名单用户忽略
-  ├─→ 消息类型检查 → 非 text 类型拒绝
+  ├─→ 消息类型路由:
+  │   ├─→ text  → 常规文本处理
+  │   ├─→ image → HTTP 下载 + AES 解密 → 存入沙箱 → 缓存文件上下文
+  │   └─→ file  → HTTP 下载 + AES 解密 → 存入沙箱 → 缓存文件上下文
   ├─→ 群聊 @ 过滤     → 未 @ 机器人则忽略
   ├─→ 内容哈希去重（10s 窗口）→ 重复则跳过
   │
@@ -221,11 +268,14 @@
 
 ### 消息处理
 - **流式回复**：Claude 输出实时分段推送到企业微信，500ms 节流
+- **文件/图片接收**：FileBroker 自动下载 + AES-256-CBC 解密 → 沙箱存储 → Claude Read 可读
+- **文件/图片发送**：`[FILE_OUTPUT]` 协议提取 → 沙箱写入 → WebSocket 三阶段上传 → 直发 WeCom
 - **消息去重**：msgId 去重（30s 窗口）+ 内容哈希去重（10s 窗口），防止企业微信重复回调
 - **发送冷却**：3s 内同内容不重复发送
 - **自动截断**：超 4000 字节自动截断（企业微信 markdown 限制 4096 字节）
 - **群聊 @ 过滤**：只在被 @ 机器人名称时回复，支持自定义名称
 - **白名单**：支持按用户 ID 限制可访问的用户
+- **文件竞态处理**：文字和文件同时到达时，文件上下文缓存等待文字消息注入
 
 ### 会话管理
 - **群聊隔离**：群聊中每人独立会话线程（`group:<chatid>:<userid>`），互不影响
@@ -244,13 +294,14 @@
 - **开机自启**：systemd 服务，服务器重启后自动恢复
 
 ### 安全隔离
-通过三层防护确保 WeCom 机器人不修改 Claude Code 配置：
 
 | 层级 | 机制 | 说明 |
 |------|------|------|
-| 1 | `--disallowed-tools` | 拒绝 Bash、Write、Edit、NotebookEdit、Agent |
-| 2 | `--permission-mode bypassPermissions` | 跳过权限询问，仅允许只读工具 |
-| 3 | 系统提示词 | 声明只读环境，拒绝配置修改请求 |
+| 1 | `--allowedTools` | Claude 仅允许 Read、Grep、Glob、WebSearch、WebFetch |
+| 2 | `--add-dir /tmp/wecom-sandbox` | 额外可读沙箱目录（仅 FileBroker 可写） |
+| 3 | 系统提示词 | 声明只读环境 + `[FILE_OUTPUT]` 协议说明 |
+| 4 | FileBroker 沙箱 | 文件操作限定沙箱，8 项安全校验 |
+| 5 | TTL 自动清理 | 5 分钟后自动删除沙箱文件 |
 
 ## 前置条件
 

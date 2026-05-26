@@ -268,16 +268,37 @@ pm2 status
 ✅ WebSocket 已连接
 ✅ 认证成功，启动心跳...
 ✅ WebSocket 已连接，等待消息...
+🧹 沙箱: /tmp/wecom-sandbox (TTL=300s, maxSize=10MB)  ← FileBroker 已启动
+[FileBroker] 沙箱目录: /tmp/wecom-sandbox
 ```
 
-### 3. 在群里测试
+### 3. 验证沙箱
+
+```bash
+# 确认沙箱目录已创建
+ls -la /tmp/wecom-sandbox/
+
+# 确认 FileBroker 日志
+grep FileBroker /var/log/wecom-chat-agent/out.log
+```
+
+### 4. 在群里测试
 
 在企业微信群聊中 @机器人名称 发消息：
 ```
-@<机器人名称> /help
+@cc-bot /help
 ```
 
-应收到机器人的帮助信息回复。
+应收到机器人的帮助信息回复，包含 `[FILE_OUTPUT]` 协议说明。
+
+### 5. 文件功能测试
+
+```
+# 私聊发文件 → Claude 读取
+发一张图片 → Claude 描述图片内容
+发 .txt/.log → Claude 读取并总结
+@cc-bot 生成一份 JSON 测试数据 → 收到 file 消息
+```
 
 ### 4. 验证会话隔离
 
@@ -352,3 +373,30 @@ ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
 ANTHROPIC_AUTH_TOKEN=your_api_key
 ANTHROPIC_MODEL=deepseek-v4-pro
 ```
+
+### Q: 收到文件后 Claude 说"无法读取"
+
+**原因**：沙箱目录未正确挂载或权限不足。
+
+**解决**：
+1. 确认日志中 `🧹 沙箱: /tmp/wecom-sandbox` 已出现
+2. 确认日志中有 `AES 解密完成` 字样（说明解密成功）
+3. 检查 Claude 系统提示词是否包含 `--add-dir /tmp/wecom-sandbox`
+
+### Q: 发送文件失败（markdown 附注显示"发送失败"）
+
+**原因**：WebSocket 三阶段上传 (`aibot_upload_media_init/chunk/finish`) 可能因网络或 API 变更失败。
+
+**解决**：
+1. 查看日志中的具体错误信息
+2. 确认 WeCom AI Bot 长连接版本支持 `aibot_upload_media_*` 命令（2026/03/13 新增）
+3. 回退方案：系统会自动发送 markdown 附注告知用户
+
+### Q: 沙箱目录文件堆积
+
+**原因**：TTL 定时器未正常触发。
+
+**解决**：
+1. TTL 默认 5 分钟自动清理，查看日志 `[FileBroker] TTL 清理:`
+2. 手动清理：`rm -f /tmp/wecom-sandbox/*`
+3. 调整 TTL：设置环境变量 `FILE_TTL_MS=180000`（3 分钟）
