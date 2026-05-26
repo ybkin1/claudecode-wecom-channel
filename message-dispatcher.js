@@ -163,6 +163,9 @@ class MessageDispatcher {
         return;
       }
 
+      // DEBUG: 打印完整消息体，确认 WeCom 回调格式
+      console.log('[DEBUG file-callback] chattype=' + chattype + ' msgtype=' + msgtype + ' body=' + JSON.stringify(body).substring(0, 500));
+
       const fileInfo = msgtype === 'image'
         ? { url: body.image?.url, fileName: 'image.jpg', mimeHint: 'image/jpeg' }
         : { url: body.file?.url, fileName: body.file?.file_name || 'file', mimeHint: '' };
