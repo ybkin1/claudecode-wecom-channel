@@ -282,6 +282,12 @@ class MessageDispatcher {
   async _dispatchText(userId, content, chatType, identifier, msgId, fileContext) {
     const sessionKey = SessionManager.makeKey(chatType, identifier, userId);
 
+    // ── 竞态防护 v2：文字先到时，若无文件上下文则等 800ms ──
+    if (!fileContext && !this._pendingFileContexts.has(sessionKey) && !this._pendingFileDownloads.has(sessionKey)) {
+      await new Promise(function(r) { setTimeout(r, 1500); });
+      console.log("[Dispatcher] 延迟检查: session=" + sessionKey + ", hasPendingFile=" + this._pendingFileContexts.has(sessionKey) + ", hasPendingDl=" + this._pendingFileDownloads.has(sessionKey));
+    }
+
     // ── 竞态防护：等待同会话的并发文件下载完成（最多 2s）──
     var downloadPromise = this._pendingFileDownloads.get(sessionKey);
     if (downloadPromise) {

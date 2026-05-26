@@ -400,7 +400,7 @@ class FileBroker {
 
     // EML email (starts with common email headers)
     var head = fileBuf.slice(0, 100).toString("ascii").toLowerCase();
-    if (/^(from|return-path|received|date|message-id|mime-version|delivered-to):s/m.test(head)) {
+    if (/^(from|return-path|received|date|message-id|mime-version|delivered-to):\s/m.test(head)) {
       return ".eml";
     }
 
