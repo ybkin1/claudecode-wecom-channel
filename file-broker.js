@@ -15,6 +15,7 @@ const https = require('https');
 const http = require('http');
 const { URL } = require('url');
 const { FileConverter } = require('./file-converter.js');
+const { EmlParser } = require('./eml-parser.js');
 
 const DEFAULT_ALLOWED_EXTENSIONS = [
   '.md', '.txt', '.json', '.csv', '.xml', '.yaml', '.yml',
@@ -121,6 +122,57 @@ class FileBroker {
         }
       }
 
+      // ── EML 附件提取 ──
+      var emlData = null;
+      if (extension === ".eml") {
+        try {
+          var parsed = EmlParser.parse(content);
+          emlData = {
+            subject: parsed.subject,
+            from: parsed.from,
+            textBody: parsed.textBody,
+            htmlBody: parsed.htmlBody,
+            attachmentCount: parsed.attachments.length,
+            extractedAttachments: [],
+          };
+          console.log("[FileBroker] EML 解析: subject=\"" + parsed.subject + "\", attachments=" + parsed.attachments.length);
+
+          for (var ai = 0; ai < parsed.attachments.length; ai++) {
+            var att = parsed.attachments[ai];
+            // 为每个附件写入沙箱
+            var attExt = this._extractExtension(att.filename) || ".bin";
+            var attPath = this._generateSandboxPath(attExt, userId);
+            fs.writeFileSync(attPath, att.content);
+            this._scheduleCleanup(attPath);
+
+            // 魔数检测附件
+            var attDetected = this._detectFileTypeByContent(att.content);
+            if (attDetected && attDetected !== attExt) {
+              var newAttPath = attPath.replace(/\.[^.]+$/, attDetected);
+              try { fs.renameSync(attPath, newAttPath); attPath = newAttPath; attExt = attDetected; } catch(e) {}
+            }
+
+            // 转换附件
+            var attConv = null;
+            if (this.converter.isConvertible(attExt)) {
+              try { attConv = await this.converter.convert(attPath, attExt);
+                if (attConv && attConv.convertedPath) this._scheduleCleanup(attConv.convertedPath);
+              } catch(e) {}
+            }
+
+            emlData.extractedAttachments.push({
+              filename: att.filename,
+              sandboxPath: attPath,
+              extension: attExt,
+              size: att.content.length,
+              converted: attConv,
+            });
+          }
+        } catch (parseErr) {
+          console.warn("[FileBroker] EML 解析失败: " + parseErr.message);
+        }
+      }
+
       return {
         sandboxPath,
         originalFilename,
@@ -128,6 +180,7 @@ class FileBroker {
         size: content.length,
         converted: convertResult,
         isNativeReadable: this.converter.isNativeSupported(extension),
+        emlData: emlData,
       };
     } catch (err) {
       try { fs.unlinkSync(sandboxPath); } catch (e) { /* ignore */ }
@@ -164,8 +217,44 @@ class FileBroker {
       return lines.join('\n');
     }
 
+    // ── EML 邮件特殊处理 ──
+    if (fileEntry.emlData && fileEntry.emlData.textBody) {
+      var ed = fileEntry.emlData;
+      lines.push("[系统消息] 用户发送了一封邮件，内容已提取如下：");
+      if (ed.subject) lines.push("**主题**: " + ed.subject);
+      if (ed.from) lines.push("**发件人**: " + ed.from);
+      lines.push("");
+      lines.push("--- 邮件正文 ---");
+      var bodyText = ed.textBody || ed.htmlBody || "";
+      // 去除 HTML 标签（简单处理）
+      bodyText = bodyText.replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").replace(/&quot;/g, "\"");
+      if (bodyText.length > 30000) bodyText = bodyText.substring(0, 30000) + "\n\n... (邮件正文过长，已截断)";
+      lines.push(bodyText);
+      lines.push("--- 邮件正文结束 ---");
+
+      // 提取的附件内容
+      if (ed.extractedAttachments && ed.extractedAttachments.length > 0) {
+        for (var eai = 0; eai < ed.extractedAttachments.length; eai++) {
+          var ea = ed.extractedAttachments[eai];
+          if (ea.converted && ea.converted.text) {
+            var eaLabel = ea.filename;
+            lines.push("");
+            lines.push("--- 附件内容: " + eaLabel + " ---");
+            var eaText = ea.converted.text;
+            if (eaText.length > 40000) eaText = eaText.substring(0, 40000) + "\n\n... (附件过长，已截断)";
+            lines.push(eaText);
+            lines.push("--- 附件结束: " + eaLabel + " ---");
+          } else {
+            lines.push("- 附件 \"" + ea.filename + "\" 已保存至沙箱: " + ea.sandboxPath + " (使用 Read 工具读取)");
+          }
+        }
+      }
+
+      return lines.join("\n");
+    }
+
     // 图片、PDF 等原生可读格式 — 让 Claude 自己 Read
-    lines.push('[系统消息] 用户发送了一个文件，已保存至沙箱：');
+    lines.push("[系统消息] 用户发送了一个文件，已保存至沙箱：");
     lines.push('- 文件路径: ' + fileEntry.sandboxPath);
     if (fileEntry.originalFilename) {
       lines.push('- 原始文件名: ' + fileEntry.originalFilename);
