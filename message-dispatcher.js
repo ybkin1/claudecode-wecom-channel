@@ -92,6 +92,9 @@ class MessageDispatcher {
     // 待处理文件上下文（文件消息不触发 Claude 调用，仅注入上下文给下一条文字消息）
     this._pendingFileContexts = new Map(); // sessionKey → contextMsg
 
+    // 竞态防护：跟踪正在下载中的文件 Promise，文字消息到达时等待完成
+    this._pendingFileDownloads = new Map(); // sessionKey → Promise<boolean>
+
     // 并发控制器
     this._concurrencyLimiter = new ConcurrencyLimiter({
       maxConcurrent: config.maxConcurrent || 3,
@@ -228,6 +231,17 @@ class MessageDispatcher {
    * 处理文件/图片消息（下载 → 存沙箱 → 构建上下文 → 转发为文本）
    */
   async _handleFileMessage(userId, fileInfo, chatType, identifier, msgId) {
+    // ── 竞态防护：标记文件下载进行中 ──
+    var sessionKey = SessionManager.makeKey(chatType, identifier, userId);
+    var fileDownloadDeferred = {};
+    var fileDownloadPromise = new Promise(function(resolve) {
+      fileDownloadDeferred.resolve = resolve;
+    });
+    // 超时保护：2s 后自动释放
+    var fileDownloadTimer = setTimeout(function() {
+      fileDownloadDeferred.resolve();
+    }, 2000);
+    this._pendingFileDownloads.set(sessionKey, fileDownloadPromise);
     try {
       // 1. 发送"正在接收"提示（仅群聊）
       if (chatType === 'group') {
@@ -250,14 +264,32 @@ class MessageDispatcher {
       const sessionKey = SessionManager.makeKey(chatType, identifier, userId);
       this._pendingFileContexts.set(sessionKey, contextMsg);
       console.log('[Dispatcher] 文件上下文已缓存: session=' + sessionKey + ', 等待下一条文字消息');
+
+      // ── 竞态防护：文件下载完成，释放等待的文字消息 ──
+      clearTimeout(fileDownloadTimer);
+      fileDownloadDeferred.resolve();
+      this._pendingFileDownloads.delete(sessionKey);
     } catch (err) {
       console.error('[Dispatcher] 文件处理失败: ' + err.message);
+      // 竞态防护：即使失败也释放等待
+      clearTimeout(fileDownloadTimer);
+      fileDownloadDeferred.resolve();
+      this._pendingFileDownloads.delete(sessionKey);
       await this._sendReply(identifier, '⚠️ 文件接收失败: ' + err.message);
     }
   }
 
   async _dispatchText(userId, content, chatType, identifier, msgId, fileContext) {
     const sessionKey = SessionManager.makeKey(chatType, identifier, userId);
+
+    // ── 竞态防护：等待同会话的并发文件下载完成（最多 2s）──
+    var downloadPromise = this._pendingFileDownloads.get(sessionKey);
+    if (downloadPromise) {
+      console.log('[Dispatcher] 等待文件下载完成: session=' + sessionKey);
+      await downloadPromise;
+      console.log('[Dispatcher] 文件下载完成，继续: session=' + sessionKey);
+      this._pendingFileDownloads.delete(sessionKey);
+    }
 
     // 检查是否有挂起的文件上下文（文件先到达，文字紧随）
     if (!fileContext && this._pendingFileContexts.has(sessionKey)) {

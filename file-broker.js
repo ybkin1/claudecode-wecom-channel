@@ -390,7 +390,22 @@ class FileBroker {
     if (fileBuf[0] === 0x52 && fileBuf[1] === 0x49 && fileBuf[2] === 0x46 && fileBuf[3] === 0x46 &&
         fileBuf.length >= 12 && fileBuf[8] === 0x57 && fileBuf[9] === 0x45 && fileBuf[10] === 0x42 && fileBuf[11] === 0x50) return ".webp";
 
-    // Plain text / JSON / CSV — 检查是否全部为可打印 ASCII/UTF-8
+
+    // OLE2 Compound Document (old .doc / .xls / .ppt)
+    if (fileBuf[0] === 0xD0 && fileBuf[1] === 0xCF && fileBuf[2] === 0x11 && fileBuf[3] === 0xE0 &&
+        fileBuf[4] === 0xA1 && fileBuf[5] === 0xB1 && fileBuf[6] === 0x1A && fileBuf[7] === 0xE1) {
+      // 无法精确区分 .doc/.xls/.ppt，统一标记为 .doc (Claude 原生不支持 OLE2)
+      return ".doc";
+    }
+
+    // EML email (starts with common email headers)
+    var head = fileBuf.slice(0, 100).toString("ascii").toLowerCase();
+    if (/^(from|return-path|received|date|message-id|mime-version|delivered-to):s/m.test(head)) {
+      return ".eml";
+    }
+
+    // Plain text / JSON / CSV
+        // Plain text / JSON / CSV — 检查是否全部为可打印 ASCII/UTF-8
     // 跳过，避免误判（让 Claude Read 自己读 .bin）
 
     return null;
