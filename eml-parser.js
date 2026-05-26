@@ -42,7 +42,8 @@ class EmlParser {
       attachments: [],
     };
 
-    EmlParser._parseBody(text, bodyOffset, result.contentType, result);
+    // 传递顶层 headers 用于解码 Content-Transfer-Encoding
+    EmlParser._parseBody(text, bodyOffset, result.contentType, result, headers);
     return result;
   }
 
@@ -84,18 +85,18 @@ class EmlParser {
     return text.length;
   }
 
-  static _parseBody(text, startOffset, contentType, result) {
+  static _parseBody(text, startOffset, contentType, result, topHeaders) {
     var ctLower = (contentType || '').toLowerCase();
     var boundary = EmlParser._extractParam(contentType, 'boundary');
 
     if (!boundary) {
-      // 非 multipart — 直接当正文
+      // 非 multipart — 从顶层 headers 获取编码
       var body = text.substring(startOffset).trim();
-      var encoding = ''; // 头部已在顶层传入
+      var encoding = topHeaders ? (topHeaders['content-transfer-encoding'] || '') : '';
       if (ctLower.indexOf('text/html') !== -1) {
-        result.htmlBody = body;
+        result.htmlBody = encoding ? EmlParser._decodeContent(body, encoding, true).toString('utf8') : body;
       } else {
-        result.textBody = body;
+        result.textBody = encoding ? EmlParser._decodeContent(body, encoding, true).toString('utf8') : body;
       }
       return;
     }

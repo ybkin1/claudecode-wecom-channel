@@ -22,6 +22,8 @@ const CONVERTIBLE_EXTENSIONS = {
 const NATIVE_SUPPORTED = ['.pdf'];
 
 class FileConverter {
+  // ZIP 解压安全上限：防止 ZIP 炸弹攻击 (50MB)
+  static MAX_DECOMPRESS_SIZE = 50 * 1024 * 1024;
   constructor(options) {
     if (!options) options = {};
     this.enabled = options.enabled !== false;
@@ -212,9 +214,20 @@ class FileConverter {
           // Store — 无压缩，直接读取
           results.push({ name: e.name, data: buffer.slice(dataStart, dataStart + e.size) });
         } else if (e.method === 8) {
-          // Deflate
+          // Deflate — 增加 ZIP 炸弹防护
           var raw = buffer.slice(dataStart, dataStart + e.size);
-          results.push({ name: e.name, data: zlib.inflateRawSync(raw) });
+          // 压缩比异常检测：压缩 <1KB 但声称解压 >50MB → 拒绝
+          var estimatedRatio = e.size > 0 ? (50 * 1024 * 1024) / e.size : 999;
+          if (e.size < 1024 && estimatedRatio > 1000) {
+            console.log('[FileConverter] ZIP 炸弹防护: 跳过异常压缩比条目 ' + e.name + ' (' + e.size + 'B 压缩)');
+            continue;
+          }
+          var inflated = zlib.inflateRawSync(raw);
+          if (inflated.length > FileConverter.MAX_DECOMPRESS_SIZE) {
+            console.log('[FileConverter] ZIP 炸弹防护: 解压后 ' + inflated.length + ' > ' + FileConverter.MAX_DECOMPRESS_SIZE);
+            continue;
+          }
+          results.push({ name: e.name, data: inflated });
         }
       } catch (err) {
         console.log('[FileConverter] ZIP entry "' + e.name + '" 解压失败: ' + err.message);
