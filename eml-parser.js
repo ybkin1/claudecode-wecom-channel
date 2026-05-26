@@ -9,6 +9,21 @@
  */
 
 class EmlParser {
+  /**
+   * 解码 RFC 2047 编码的邮件头 (=?charset?encoding?text?=)
+   */
+  static _decodeRfc2047(text) {
+    if (!text) return text;
+    return text.replace(/=?([^?]+)?([BbQq])?([^?]*)?=/g, function(m, charset, enc, data) {
+      try {
+        if (enc.toUpperCase() === "B") {
+          return Buffer.from(data, "base64").toString("utf8");
+        } else {
+          return Buffer.from(data.replace(/_/g, " "), "base64").toString("utf8");
+        }
+      } catch(e) { return m; }
+    });
+  }
   static parse(raw) {
     var text = typeof raw === 'string' ? raw : raw.toString('utf8');
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
@@ -17,9 +32,9 @@ class EmlParser {
     var bodyOffset = EmlParser._parseHeaders(text, 0, headers);
 
     var result = {
-      subject: headers['subject'] || '',
-      from: headers['from'] || '',
-      to: headers['to'] || '',
+      subject: EmlParser._decodeRfc2047(headers['subject'] || ''),
+      from: EmlParser._decodeRfc2047(headers['from'] || ''),
+      to: EmlParser._decodeRfc2047(headers['to'] || ''),
       date: headers['date'] || '',
       contentType: headers['content-type'] || 'text/plain',
       textBody: '',
