@@ -100,7 +100,7 @@ class FileConverter {
 
   async _convertDocx(sourcePath) {
     var mammoth = require('mammoth');
-    var buffer = fs.readFileSync(sourcePath);
+    var buffer = await fs.promises.readFile(sourcePath);
     var result = await mammoth.convertToMarkdown({ buffer: buffer });
     if (result.messages && result.messages.length > 0) {
       result.messages.forEach(function(m) {
@@ -114,7 +114,9 @@ class FileConverter {
 
   async _convertXlsx(sourcePath) {
     var XLSX = require('xlsx');
-    var workbook = XLSX.readFile(sourcePath);
+    // M-5: 异步读取避免阻塞事件循环
+    var xlsxBuf = await fs.promises.readFile(sourcePath);
+    var workbook = XLSX.read(xlsxBuf, { type: 'buffer' });
     var sheetNames = workbook.SheetNames;
 
     var allParts = [];
@@ -133,6 +135,7 @@ class FileConverter {
   // ── .pptx → text (ZIP 解析 + XML 文本提取) ──
 
   _convertPptx(sourcePath) {
+    // M-5: 异步读取
     var buffer = fs.readFileSync(sourcePath);
     var slideEntries = this._extractZipEntries(buffer, /^ppt\/slides\/slide\d+\.xml$/i);
 

@@ -24,7 +24,14 @@ class EmlParser {
       } catch(e) { return m; }
     });
   }
+  static MAX_EML_SIZE = 50 * 1024 * 1024; // 50MB EML 上限
+
   static parse(raw) {
+    // M-7 fix: 拒绝超大 EML 防止 OOM
+    var rawLen = typeof raw === 'string' ? Buffer.byteLength(raw, 'utf8') : raw.length;
+    if (rawLen > EmlParser.MAX_EML_SIZE) {
+      throw new Error('EML 文件过大 (' + rawLen + ' > ' + EmlParser.MAX_EML_SIZE + ')，拒绝解析');
+    }
     var text = typeof raw === 'string' ? raw : raw.toString('utf8');
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
@@ -43,7 +50,7 @@ class EmlParser {
     };
 
     // 传递顶层 headers 用于解码 Content-Transfer-Encoding
-    EmlParser._parseBody(text, bodyOffset, result.contentType, result, headers);
+    EmlParser._parseBody(text, bodyOffset, result.contentType, result, headers, 0);
     return result;
   }
 
@@ -85,7 +92,10 @@ class EmlParser {
     return text.length;
   }
 
-  static _parseBody(text, startOffset, contentType, result, topHeaders) {
+  static _parseBody(text, startOffset, contentType, result, topHeaders, _depth) {
+    var depth = _depth || 0;
+    // L-2 fix: 防止恶意深度嵌套 MIME 栈溢出
+    if (depth > 10) { console.log('[EmlParser] MIME 嵌套过深(' + depth + ')，停止递归'); return; }
     var ctLower = (contentType || '').toLowerCase();
     var boundary = EmlParser._extractParam(contentType, 'boundary');
 
@@ -144,7 +154,7 @@ class EmlParser {
 
       // 嵌套 multipart
       if (partCT.toLowerCase().indexOf('multipart/') !== -1) {
-        EmlParser._parseBody(partText, bodyOffset, partCT, result);
+        EmlParser._parseBody(partText, bodyOffset, partCT, result, null, depth + 1);
         pos = nextBIdx;
         continue;
       }
@@ -154,8 +164,10 @@ class EmlParser {
 
       if (isAttachment && filename) {
         var decodedContent = EmlParser._decodeContent(partBody, encoding, false);
+        // M-2: 剥离路径部分以防路径穿越
+        var safeFilename = require('path').basename(filename);
         result.attachments.push({
-          filename: filename,
+          filename: safeFilename,
           contentType: partCT,
           content: decodedContent,
         });

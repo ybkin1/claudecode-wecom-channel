@@ -125,7 +125,7 @@ class ClaudeOrchestrator {
       proc.stdout.on('data', function(chunk) {
         var text = chunk.toString();
         accumulatedText += text;
-        if (onStreamDelta) onStreamDelta(accumulatedText, false).catch(function() {});
+        if (onStreamDelta) onStreamDelta(accumulatedText, false).catch(function(e) { console.error('[Claude] stream delta 推送失败: ' + e.message); });
       });
 
       proc.stderr.on('data', function(chunk) {
@@ -141,7 +141,7 @@ class ClaudeOrchestrator {
           }
           accumulatedText = '已完成处理，但未生成文本回复。';
         }
-        if (onStreamDelta) onStreamDelta(accumulatedText, true).catch(function() {});
+        if (onStreamDelta) onStreamDelta(accumulatedText, true).catch(function(e) { console.error('[Claude] stream final 推送失败: ' + e.message); });
         resolve(accumulatedText);
       });
 
@@ -186,6 +186,17 @@ class ClaudeOrchestrator {
     }
 
     console.log('[Claude] prompt 截断: ' + fullLen + ' -> ' + Buffer.byteLength(truncatedPrompt, 'utf8') + ' bytes');
+    // M-3 fix: 最终检查 — 如仍超限（单条超大消息），按字节截断
+    if (Buffer.byteLength(truncatedPrompt, 'utf8') > MAX_PROMPT_LENGTH) {
+      var oversizeBuf = Buffer.from(truncatedPrompt, 'utf8');
+      var cut = oversizeBuf.slice(0, MAX_PROMPT_LENGTH - 100);
+      // 回退到完整字符边界
+      var lb2 = cut[cut.length - 1];
+      while (cut.length > 0 && (lb2 & 0xC0) === 0x80) { cut = cut.slice(0, -1); lb2 = cut[cut.length - 1]; }
+      truncatedPrompt = cut.toString('utf8').replace(/[\x00\uFFFD]/g, '')
+        + '\n\n(注: 内容过长已截断)';
+      console.log('[Claude] 单条消息超限，强制按字节截断');
+    }
     return truncatedPrompt;
   }
 
