@@ -163,6 +163,16 @@ class MessageDispatcher {
         return;
       }
 
+      // DEBUG: 打印文件回调完整 body（排查后移除）
+      console.log('[DEBUG] 文件 body keys:', Object.keys(body).join(', '));
+      console.log('[DEBUG] body.file keys:', body.file ? Object.keys(body.file).join(', ') : 'null');
+      console.log('[DEBUG] body.file.file_name:', JSON.stringify(body.file && body.file.file_name));
+      console.log('[DEBUG] body.msgtype:', body.msgtype);
+      // 提取 content_type 作为 mimeHint
+      var fileMimeHint = body.file && body.file.content_type ? body.file.content_type : '';
+      var rawFileName = body.file && body.file.file_name ? body.file.file_name : '';
+      console.log('[DEBUG] rawFileName:', JSON.stringify(rawFileName), ', mimeHint:', fileMimeHint);
+
       const fileInfo = msgtype === 'image'
         ? { url: body.image?.url, fileName: 'image.jpg', mimeHint: 'image/jpeg', aeskey: body.image?.aeskey }
         : { url: body.file?.url, fileName: body.file?.file_name || 'file', mimeHint: '', aeskey: body.file?.aeskey };

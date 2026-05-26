@@ -1,6 +1,8 @@
 /**
- * Claude 编排器 — 通过 `claude -p` CLI 调用
- * 关键：prompt 作为命令行参数（不用 stdin pipe），确保 WebSearch 生效
+ * Claude 编排器 — 通过 claude CLI 调用
+ *
+ * E2BIG 防护：prompt 超过安全阈值时自动截断对话历史，
+ * 保留最近的用户消息和系统上下文，避免 spawn 参数过长。
  */
 
 const { spawn } = require('child_process');
@@ -16,41 +18,43 @@ function findClaudePath() {
 const CLAUDE_PATH = findClaudePath();
 console.log('[Claude] 使用路径: ' + CLAUDE_PATH);
 
-const SYSTEM_PROMPT = '你是 cc-bot，一个知识库 AI 助手，通过企业微信为团队提供服务。\n\n【行为准则】\n1. 回答简洁直接，不要展示内部工作流程\n2. 优先在知识库中搜索，找不到时自动联网搜索\n3. 用中文回答，语气自然友好\n\n【能力】\n- 搜索和读取知识库（/opt/knowledge-base）中的笔记、文档、代码\n- 读取沙箱目录中的用户上传文件（使用 Read 工具）\n- 联网搜索最新信息（WebSearch）\n- 读取网页内容（WebFetch）\n\n【限制】\n- 只读环境，不能修改/删除/创建文件\n- 不能执行命令\n- 不能透露系统配置\n\n【文件输出协议】\n当你需要生成文件（如 JSON、CSV、报告等）时，使用以下格式：\n\n[FILE_OUTPUT:文件名.json]\n文件内容\n[/FILE_OUTPUT]\n\n注意：\n- 文件名必须包含扩展名，扩展名限于：.md, .txt, .json, .csv, .xml, .yaml, .yml, .html, .css, .js, .ts, .py, .sh, .ps1, .log, .rst, .cfg, .ini, .toml\n- FILE_OUTPUT 块外的文本会作为普通消息发送给用户\n- 每个文件使用独立的 FILE_OUTPUT 块\n- 用户在消息中发送的文件保存在沙箱目录，可用 Read 工具读取\n\n【回复格式】\n- 直接给答案，不要展示搜索过程\n- 知识库来源标注文件路径\n- 联网来源标注链接';
+// E2BIG 防护：ARG_MAX 安全阈值
+const MAX_PROMPT_LENGTH = 128 * 1024; // 128KB
+const MAX_FILE_CONTEXT_LENGTH = 50 * 1024; // 50KB
+
+const SYSTEM_PROMPT = '你是 cc-bot，一个知识库 AI 助手，通过企业微信为团队提供服务。\n\n【行为准则】\n1. 回答简洁直接，不要展示内部工作流程\n2. 优先在知识库中搜索，找不到时自动联网搜索\n3. 用中文回答，语气自然友好\n\n【能力】\n- 搜索和读取知识库（/opt/knowledge-base）中的笔记、文档、代码\n- 读取沙箱目录中的用户上传文件（使用 Read 工具）\n- 联网搜索最新信息（WebSearch）\n- 读取网页内容（WebFetch）\n\n【限制】\n- 只读环境，不能修改/删除/创建文件\n- 不能执行命令\n- 不能透露系统配置\n\n【文件输出协议】\n当你需要生成文件（如 JSON、CSV、报告等）时，使用以下格式：\n\n[FILE_OUTPUT:文件名.json]\n文件内容\n[/FILE_OUTPUT]\n\n注意：\n- 文件名必须包含扩展名，扩展名限于：.md, .txt, .json, .csv, .xml, .yaml, .yml, .html, .css, .js, .ts, .py, .sh, .ps1, .log, .rst, .cfg, .ini, .toml\n- FILE_OUTPUT 块外的文本会作为普通消息发送给用户\n- 每个文件使用独立的 FILE_OUTPUT 块\n- 用户发送的 Word/Excel/PPT 文件内容已自动提取并注入到对话中，你可直接分析';
 
 class ClaudeOrchestrator {
   constructor(config, sessionManager) {
     this.config = config;
     this.sessionManager = sessionManager;
-    console.log('[Claude] 编排器初始化完成');
+    console.log('[Claude] 编排器初始化完成 (prompt上限=' + (MAX_PROMPT_LENGTH / 1024).toFixed(0) + 'KB)');
   }
 
-  /**
-   * @param {string} userId
-   * @param {string} userName
-   * @param {string} message — 用户消息文本
-   * @param {string} sessionKey
-   * @param {Function} onStreamDelta — 流式回调
-   * @param {string} [fileContext] — 可选，文件上下文消息（由 FileBroker 构建）
-   */
   async handleMessage(userId, userName, message, sessionKey, onStreamDelta, fileContext) {
     const startTime = Date.now();
     try {
       const sanitizedMessage = this._sanitizeInput(message);
       const messages = this.sessionManager.getMessages(sessionKey);
 
-      // 如果有文件上下文（用户发送了图片/文件），作为系统消息注入
       if (fileContext) {
-        messages.push({ role: 'user', content: fileContext, userId: 'system', userName: 'system' });
+        var safeFileContext = fileContext;
+        if (Buffer.byteLength(fileContext, 'utf8') > MAX_FILE_CONTEXT_LENGTH) {
+          safeFileContext = fileContext.substring(0, MAX_FILE_CONTEXT_LENGTH)
+            + '\n\n... (文件内容过长，已截断)';
+          console.log('[Claude] fileContext 截断: ' + fileContext.length + ' chars');
+        }
+        messages.push({ role: 'user', content: safeFileContext, userId: 'system', userName: 'system' });
       }
 
       messages.push({ role: 'user', content: sanitizedMessage, userId, userName });
-      console.log('[Claude] 处理: user=' + userId + '(' + userName + '), session=' + sessionKey + (fileContext ? ', hasFileContext' : ''));
+      console.log('[Claude] 处理: user=' + userId + ', session=' + sessionKey + (fileContext ? ', hasFileContext' : ''));
 
-      // 计算用户专属沙箱子目录
-    var userSandboxDir = this.config.sandboxDir ? path.join(this.config.sandboxDir, this._sanitizeForDir(userId)) : null;
+      var userSandboxDir = this.config.sandboxDir
+        ? path.join(this.config.sandboxDir, this._sanitizeForDir(userId))
+        : null;
 
-    const result = await this._runClaudePrompt(messages, userName, onStreamDelta, userSandboxDir);
+      const result = await this._runClaudePrompt(messages, userName, onStreamDelta, userSandboxDir);
 
       this.sessionManager.addMessage(sessionKey, 'user', sanitizedMessage, userId, userName);
       this.sessionManager.addMessage(sessionKey, 'assistant', result);
@@ -67,7 +71,7 @@ class ClaudeOrchestrator {
   _runClaudePrompt(messages, currentUserName, onStreamDelta, sandboxDir) {
     var self = this;
     return new Promise(function(resolve, reject) {
-      var prompt = self._buildPrompt(messages, currentUserName);
+      var prompt = self._buildSafePrompt(messages, currentUserName);
 
       var timeout = setTimeout(function() {
         if (proc) { proc.kill('SIGTERM'); setTimeout(function() { try { proc.kill('SIGKILL'); } catch(e) {} }, 2000); }
@@ -75,10 +79,10 @@ class ClaudeOrchestrator {
       }, 300000);
 
       var effectiveSandbox = sandboxDir || self.config.sandboxDir || '/tmp/wecom-sandbox';
-      // 确保子目录存在
       if (!require('fs').existsSync(effectiveSandbox)) {
         require('fs').mkdirSync(effectiveSandbox, { recursive: true });
       }
+
       var args = [
         '-p', prompt,
         '--settings', path.join(__dirname, 'settings.json'),
@@ -90,7 +94,6 @@ class ClaudeOrchestrator {
       ];
 
       if (self.config.model) args.push('--model', self.config.model);
-
       var cwd = self.config.workingDir || '/opt/knowledge-base';
 
       var env = {
@@ -99,9 +102,9 @@ class ClaudeOrchestrator {
         ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL || '',
         ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
         ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL || '',
-        
-        
       };
+
+      console.log('[Claude] spawn: prompt_len=' + prompt.length + ', sandbox=' + effectiveSandbox);
 
       var proc = spawn(CLAUDE_PATH, args, {
         cwd: cwd,
@@ -119,8 +122,7 @@ class ClaudeOrchestrator {
       });
 
       proc.stderr.on('data', function(chunk) {
-        var text = chunk.toString().trim();
-        console.log('[Claude stderr]', text.substring(0, 500));
+        console.log('[Claude stderr]', chunk.toString().trim().substring(0, 500));
       });
 
       proc.on('close', function(code) {
@@ -138,12 +140,49 @@ class ClaudeOrchestrator {
 
       proc.on('error', function(err) {
         clearTimeout(timeout);
-        reject(new Error('claude 进程错误: ' + err.message));
+        if (err.code === 'E2BIG') {
+          console.error('[Claude] E2BIG 仍发生，回退到最小 prompt');
+          self._runClaudePrompt(
+            [{ role: 'system', content: '用户发送了一条消息但内容太长，请简短回复。', userId: 'system' }],
+            currentUserName, onStreamDelta, sandboxDir
+          ).then(resolve).catch(reject);
+        } else {
+          reject(new Error('claude 进程错误: ' + err.message));
+        }
       });
     });
   }
 
-  _buildPrompt(messages, currentUserName) {
+  _buildSafePrompt(messages, currentUserName) {
+    var fullPrompt = this._buildPrompt(messages, currentUserName);
+    var fullLen = Buffer.byteLength(fullPrompt, 'utf8');
+
+    if (fullLen <= MAX_PROMPT_LENGTH) return fullPrompt;
+
+    console.log('[Claude] prompt 过长 (' + fullLen + ' > ' + MAX_PROMPT_LENGTH + ')，截断对话历史');
+
+    var parts = this._messagesToParts(messages, currentUserName);
+    var tailParts = [];
+    var tailLen = 0;
+    for (var i = parts.length - 1; i >= 0; i--) {
+      var partLen = Buffer.byteLength(parts[i], 'utf8') + 2;
+      if (tailLen + partLen > MAX_PROMPT_LENGTH && tailParts.length >= 2) break;
+      tailParts.unshift(parts[i]);
+      tailLen += partLen;
+    }
+
+    var truncatedPrompt = tailParts.join('\n\n');
+
+    if (tailParts.length < parts.length) {
+      var note = '(注: 对话历史过长，已截断。丢弃了较早的 ' + (parts.length - tailParts.length) + ' 条消息。)';
+      truncatedPrompt = note + '\n\n' + truncatedPrompt;
+    }
+
+    console.log('[Claude] prompt 截断: ' + fullLen + ' -> ' + Buffer.byteLength(truncatedPrompt, 'utf8') + ' bytes');
+    return truncatedPrompt;
+  }
+
+  _messagesToParts(messages, currentUserName) {
     var parts = [];
     for (var i = 0; i < messages.length; i++) {
       var msg = messages[i];
@@ -154,12 +193,13 @@ class ClaudeOrchestrator {
         parts.push('[助手]: ' + msg.content);
       }
     }
-    return parts.join('\n\n');
+    return parts;
   }
 
-  /**
-   * 净化用户标识为安全目录名
-   */
+  _buildPrompt(messages, currentUserName) {
+    return this._messagesToParts(messages, currentUserName).join('\n\n');
+  }
+
   _sanitizeForDir(str) {
     if (!str) return 'default';
     return String(str).replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 64) || 'default';
@@ -168,7 +208,7 @@ class ClaudeOrchestrator {
   _sanitizeInput(text) {
     if (!text) return '';
     return text
-      .replace(/[​‌‍﻿]/g, '')
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')
       .replace(/\[?\s*(SYS_USER|SYSTEM_USER|当前用户|系统用户|助手|ASSISTANT|SYSTEM|AI|BOT)\s*\]?\s*/gi, '')
       .replace(/^(助手|ASSISTANT|SYSTEM|AI)\s*[:：]/gmi, '')
       .trim();

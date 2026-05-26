@@ -61,6 +61,8 @@ const DEFAULTS = {
   // FileBroker 沙箱配置
   sandboxDir: process.env.SANDBOX_DIR || '/tmp/wecom-sandbox',
   fileTtlMs: parseInt(process.env.FILE_TTL_MS) || 300000,
+  maxConvertSize: parseInt(process.env.MAX_CONVERT_SIZE) || 52428800,
+  conversionEnabled: process.env.CONVERSION_ENABLED !== "false",
   maxFileSize: parseInt(process.env.MAX_FILE_SIZE) || 10485760,
   allowedFileExtensions: process.env.ALLOWED_FILE_EXTENSIONS
     ? process.env.ALLOWED_FILE_EXTENSIONS.split(',').map(function(s) { return s.trim(); }).filter(Boolean)

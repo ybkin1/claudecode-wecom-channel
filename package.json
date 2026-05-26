@@ -6,9 +6,16 @@
   "scripts": {
     "start": "node main.js"
   },
-  "keywords": ["wecom", "claude", "chatbot", "claude-code"],
+  "keywords": [
+    "wecom",
+    "claude",
+    "chatbot",
+    "claude-code"
+  ],
   "license": "MIT",
   "dependencies": {
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "mammoth": "^1.8.0",
+    "xlsx": "^0.18.5"
   }
 }

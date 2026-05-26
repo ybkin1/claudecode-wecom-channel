@@ -72,6 +72,12 @@ async function main() {
   if (config.allowedFileExtensions) {
     fileBrokerOptions.allowedExtensions = config.allowedFileExtensions;
   }
+  if (config.conversionEnabled !== undefined || config.maxConvertSize) {
+    fileBrokerOptions.converterOptions = {
+      enabled: config.conversionEnabled !== false,
+      maxConvertSize: config.maxConvertSize || 52428800,
+    };
+  }
   const fileBroker = new FileBroker(fileBrokerOptions);
 
   const dispatcher = new MessageDispatcher(wsClient, orchestrator, config, fileBroker);
