@@ -35,11 +35,13 @@ const { WeComWsClient } = require('./wecom-ws-client.js');
 const { ClaudeOrchestrator } = require('./claude-orchestrator.js');
 const { MessageDispatcher } = require('./message-dispatcher.js');
 const { SessionManager } = require('./session-manager.js');
+const { FileBroker } = require('./file-broker.js');
 const { loadConfig } = require('./config.js');
 
 // ─── 启动入口 ───
 
 let wsClient;
+let _fileBroker; // 供信号处理器引用
 
 async function main() {
   const config = loadConfig();
@@ -53,13 +55,27 @@ async function main() {
   console.log(`🧠 Claude API: ${config.apiBase || 'default'}`);
   console.log(`💬 模型: ${config.model}`);
   console.log(` 并发: max=${config.maxConcurrent || 3}, queue=${config.queueSize || 50}`);
+  console.log(`🧹 沙箱: ${config.sandboxDir} (TTL=${(config.fileTtlMs/1000).toFixed(0)}s, maxSize=${(config.maxFileSize/1024/1024).toFixed(0)}MB)`);
   console.log('');
 
   // 初始化核心组件
   const sessionManager = new SessionManager({ ttlMs: 2 * 60 * 60 * 1000 }); // 2h 过期
   const orchestrator = new ClaudeOrchestrator(config, sessionManager);
   wsClient = new WeComWsClient(config);
-  const dispatcher = new MessageDispatcher(wsClient, orchestrator, config);
+
+  // 初始化 FileBroker（安全文件读写沙箱）
+  const fileBrokerOptions = {
+    sandboxDir: config.sandboxDir,
+    fileTtlMs: config.fileTtlMs,
+    maxFileSize: config.maxFileSize,
+  };
+  if (config.allowedFileExtensions) {
+    fileBrokerOptions.allowedExtensions = config.allowedFileExtensions;
+  }
+  const fileBroker = new FileBroker(fileBrokerOptions);
+
+  const dispatcher = new MessageDispatcher(wsClient, orchestrator, config, fileBroker);
+  _fileBroker = fileBroker; // 保留引用供信号处理器使用
 
   // 绑定回调
   wsClient.on('message', (msg) => dispatcher.handleMessage(msg));
@@ -75,11 +91,13 @@ async function main() {
 
 process.on('SIGINT', () => {
   console.log('[Shutdown] 收到 SIGINT，正在关闭...');
+  if (_fileBroker) _fileBroker.cleanupAll();
   if (typeof wsClient !== "undefined" && wsClient) wsClient.disconnect();
   process.exit(0);
 });
 process.on('SIGTERM', () => {
   console.log('[Shutdown] 收到 SIGTERM，正在关闭...');
+  if (_fileBroker) _fileBroker.cleanupAll();
   if (typeof wsClient !== "undefined" && wsClient) wsClient.disconnect();
   process.exit(0);
 });

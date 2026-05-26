@@ -14,6 +14,12 @@
 
 const WebSocket = require('ws');
 const EventEmitter = require('events');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const https = require('https');
+const http = require('http');
+const { URL } = require('url');
 
 class WeComWsClient extends EventEmitter {
   constructor(config) {
@@ -126,32 +132,196 @@ class WeComWsClient extends EventEmitter {
     }
   }
 
+  /**
+   * 发送回复消息（按 msgType 构造不同 body 结构）
+   *
+   * @param {string} chatId — 会话 ID
+   * @param {string} msgType — 消息类型: 'markdown' | 'image' | 'file'
+   * @param {string|Object} content — markdown 文本 / media_id 字符串 或 { media_id } 对象
+   */
   async sendReply(chatId, msgType, content) {
     if (!this._ws || this._ws.readyState !== WebSocket.OPEN) {
       throw new Error('WebSocket 未连接');
     }
 
     const reqId = this._genId();
+
+    // 按 msgType 构造不同 body
+    const body = { chatid: chatId, msgtype: msgType };
+
+    switch (msgType) {
+      case 'markdown':
+        body.markdown = { content };
+        break;
+      case 'image':
+        // content 为 media_id 字符串 或 { media_id } 对象
+        body.image = { media_id: typeof content === 'string' ? content : (content.media_id || content) };
+        break;
+      case 'file':
+        // content 为 media_id 字符串 或 { media_id } 对象
+        body.file = { media_id: typeof content === 'string' ? content : (content.media_id || content) };
+        break;
+      default:
+        // 未知类型回退到 markdown
+        body.msgtype = 'markdown';
+        body.markdown = { content: String(content) };
+        break;
+    }
+
     const payload = {
       cmd: 'aibot_send_msg',
       headers: { req_id: reqId },
-      body: {
-        chatid: chatId,
-        msgtype: msgType,
-        markdown: { content },
-      },
+      body,
     };
 
-    console.log(`[WS] sendReply: cmd=aibot_send_msg, reqId=${reqId}, chatid=${chatId.substring(0, 12)}, content_len=${content.length}`);
+    var contentPreview = typeof content === 'string' ? content.substring(0, 60) : JSON.stringify(content).substring(0, 60);
+    console.log('[WS] sendReply: cmd=aibot_send_msg, reqId=' + reqId + ', chatid=' + chatId.substring(0, 12) + ', msgType=' + msgType + ', preview="' + contentPreview + '"');
 
     try {
       const result = await this._sendAndWait(payload, reqId, 10000);
-      console.log(`[WS] sendReply 响应: errcode=${result.errcode}`);
+      console.log('[WS] sendReply 响应: errcode=' + result.errcode);
       return result;
     } catch (e) {
-      console.error(`[WS] sendReply 失败: ${e.message}`);
+      console.error('[WS] sendReply 失败: ' + e.message);
       throw e;
     }
+  }
+
+  /**
+   * 通过 WebSocket 三阶段协议上传媒体文件
+   *
+   * 协议流程（全部走 WebSocket 通道，无需 HTTP API / access_token）：
+   *   1. aibot_upload_media_init  → 获得 upload_id
+   *   2. aibot_upload_media_chunk → 每块 512KB 逐块上传
+   *   3. aibot_upload_media_finish → 获得 media_id
+   *
+   * @param {string} filePath — 本地文件路径
+   * @param {string} [mediaType='file'] — 媒体类型: 'image' | 'file' | 'voice' | 'video'
+   * @returns {Promise<{ media_id: string, filename: string, fileSize: number, mediaType: string }>}
+   */
+  async uploadMedia(filePath, mediaType) {
+    if (!mediaType) mediaType = 'file';
+
+    var stat = fs.statSync(filePath);
+    var filename = path.basename(filePath);
+    var fileSize = stat.size;
+
+    console.log('[WS] uploadMedia: 开始上传 ' + filename + ' (' + fileSize + ' bytes, type=' + mediaType + ')');
+
+    // Step 1: 初始化上传
+    var initResp = await this._sendUploadCommand('aibot_upload_media_init', {
+      filename: filename,
+      filesize: fileSize,
+      mediatype: mediaType,
+    });
+    var uploadId = initResp.upload_id || (initResp.body && initResp.body.upload_id);
+    if (!uploadId) {
+      throw new Error('upload_media_init 未返回 upload_id: ' + JSON.stringify(initResp));
+    }
+    console.log('[WS] uploadMedia: init 完成, upload_id=' + uploadId);
+
+    // Step 2: 分块上传（每块 512KB）
+    var CHUNK_SIZE = 512 * 1024; // 512 KB
+    var fileBuffer = fs.readFileSync(filePath);
+    var totalChunks = Math.ceil(fileSize / CHUNK_SIZE);
+
+    for (var i = 0; i < totalChunks; i++) {
+      var start = i * CHUNK_SIZE;
+      var end = Math.min(start + CHUNK_SIZE, fileSize);
+      var chunk = fileBuffer.slice(start, end);
+      var base64Chunk = chunk.toString('base64');
+
+      await this._sendUploadCommand('aibot_upload_media_chunk', {
+        upload_id: uploadId,
+        chunk: base64Chunk,
+        chunk_index: i,
+      });
+      // 进度日志（每 10 块或最后一块）
+      if ((i + 1) % 10 === 0 || (i + 1) === totalChunks) {
+        console.log('[WS] uploadMedia: chunk ' + (i + 1) + '/' + totalChunks + ' 完成');
+      }
+    }
+
+    // Step 3: 完成上传，获取 media_id
+    var finishResp = await this._sendUploadCommand('aibot_upload_media_finish', {
+      upload_id: uploadId,
+    });
+    var mediaId = finishResp.media_id || (finishResp.body && finishResp.body.media_id);
+    if (!mediaId) {
+      throw new Error('upload_media_finish 未返回 media_id: ' + JSON.stringify(finishResp));
+    }
+    console.log('[WS] uploadMedia: 完成, media_id=' + mediaId);
+
+    return { media_id: mediaId, filename: filename, fileSize: fileSize, mediaType: mediaType };
+  }
+
+  /**
+   * 发送上传类 WebSocket 命令并等待响应（专用封装，60s 超时）
+   */
+  async _sendUploadCommand(cmd, body) {
+    var reqId = this._genId();
+    var payload = {
+      cmd: cmd,
+      headers: { req_id: reqId },
+      body: body,
+    };
+    return this._sendAndWait(payload, reqId, 60000);
+  }
+
+  /**
+   * 下载媒体文件（HTTP GET → 写入本地文件）
+   *
+   * 用于从 WeCom 回调 URL 下载图片/文件
+   *
+   * @param {string} url — 下载 URL
+   * @param {string} destPath — 目标文件路径
+   * @returns {Promise<void>}
+   */
+  downloadMedia(url, destPath) {
+    var self = this;
+    return new Promise(function(resolve, reject) {
+      var parsedUrl = new URL(url);
+      var client = parsedUrl.protocol === 'https:' ? https : http;
+
+      var options = {
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port,
+        path: parsedUrl.pathname + parsedUrl.search,
+        method: 'GET',
+        headers: { 'User-Agent': 'WeComAiBot/1.0' },
+      };
+
+      var req = client.request(options, function(res) {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          self.downloadMedia(res.headers.location, destPath).then(resolve).catch(reject);
+          return;
+        }
+
+        if (res.statusCode !== 200) {
+          reject(new Error('HTTP ' + res.statusCode));
+          return;
+        }
+
+        var fileStream = fs.createWriteStream(destPath);
+        res.pipe(fileStream);
+
+        fileStream.on('finish', function() {
+          fileStream.close();
+          console.log('[WS] downloadMedia: ' + destPath + ' 下载完成');
+          resolve();
+        });
+
+        fileStream.on('error', reject);
+      });
+
+      req.on('error', reject);
+      req.setTimeout(30000, function() {
+        req.destroy();
+        reject(new Error('下载超时 (30s)'));
+      });
+
+      req.end();
+    });
   }
 
   _startHeartbeat() {

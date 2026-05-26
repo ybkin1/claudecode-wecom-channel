@@ -64,10 +64,11 @@ const COMMAND_RESPONSES = {
 };
 
 class MessageDispatcher {
-  constructor(wsClient, orchestrator, config) {
+  constructor(wsClient, orchestrator, config, fileBroker) {
     this.wsClient = wsClient;
     this.orchestrator = orchestrator;
     this.config = config;
+    this.fileBroker = fileBroker;
 
     // 消息去重（防止重复处理）
     this._processedMsgIds = new Map(); // msgId → timestamp
@@ -151,6 +152,40 @@ class MessageDispatcher {
 
         await this._dispatchText(userId, content, 'private', userId, msgid);
       }
+    } else if (msgtype === 'image' || msgtype === 'file') {
+      // ── 新增：图片/文件消息处理 ──
+      if (!this.fileBroker) {
+        console.log(`⚠️ FileBroker 未配置，跳过 ${msgtype} 消息`);
+        this._sendReply(chatid || userId, `⚠️ 文件功能未启用`);
+        return;
+      }
+
+      const fileInfo = msgtype === 'image'
+        ? { url: body.image?.url, fileName: 'image.jpg', mimeHint: 'image/jpeg' }
+        : { url: body.file?.url, fileName: body.file?.file_name || 'file', mimeHint: '' };
+
+      if (!fileInfo.url) {
+        console.log(`⚠️ ${msgtype} 消息缺少下载 URL`);
+        return;
+      }
+
+      console.log(`📎 收到${msgtype === 'image' ? '图片' : '文件'}: url_preview=${fileInfo.url.substring(0, 60)}, name=${fileInfo.fileName}`);
+
+      // 群聊去重
+      if (chattype === 'group') {
+        if (this._isDuplicateInbound(chattype, userId, fileInfo.url)) {
+          console.log(`🔁 跳过重复入站文件: user=${userId}`);
+          return;
+        }
+        await this._handleFileMessage(userId, fileInfo, chattype, chatid, msgid);
+      } else {
+        if (!this.config.privateChatEnabled) return;
+        if (this._isDuplicateInbound(chattype, userId, fileInfo.url)) {
+          console.log(`🔁 跳过重复入站文件: user=${userId}`);
+          return;
+        }
+        await this._handleFileMessage(userId, fileInfo, chattype, userId, msgid);
+      }
     } else {
       console.log(`⚠️ 不支持的消息类型: ${msgtype}`);
       this._sendReply(chatid || userId, `⚠️ 暂不支持 ${msgtype} 类型消息`);
@@ -176,7 +211,39 @@ class MessageDispatcher {
 
   // ─── 内部方法 ───
 
-  async _dispatchText(userId, content, chatType, identifier, msgId) {
+  /**
+   * 处理文件/图片消息（下载 → 存沙箱 → 构建上下文 → 转发为文本）
+   */
+  async _handleFileMessage(userId, fileInfo, chatType, identifier, msgId) {
+    try {
+      // 1. 发送"正在接收"提示（仅群聊）
+      if (chatType === 'group') {
+        await this._sendReply(identifier, '📎 正在接收文件...');
+      }
+
+      // 2. 下载文件到沙箱
+      const fileEntry = await this.fileBroker.downloadAndStore(
+        fileInfo.url,
+        fileInfo.fileName,
+        fileInfo.mimeHint
+      );
+
+      // 3. 构建 Claude 上下文消息（作为 fileContext 注入，不混入用户消息）
+      const contextMsg = this.fileBroker.buildFileContextMessage(fileEntry);
+
+      // 4. 转发为文本消息给 Claude（contextMsg 作为独立 fileContext 注入，promptText 仅为指令）
+      const promptText = chatType === 'group'
+        ? '请查看上面系统消息中的文件内容，并向用户回复你的分析结果。'
+        : '请查看上面系统消息中的文件内容。';
+
+      await this._dispatchText(userId, promptText, chatType, identifier, msgId, contextMsg);
+    } catch (err) {
+      console.error('[Dispatcher] 文件处理失败: ' + err.message);
+      await this._sendReply(identifier, '⚠️ 文件接收失败: ' + err.message);
+    }
+  }
+
+  async _dispatchText(userId, content, chatType, identifier, msgId, fileContext) {
     const sessionKey = SessionManager.makeKey(chatType, identifier, userId);
 
     // 并发锁：同一会话同时只处理一条消息
@@ -197,7 +264,7 @@ class MessageDispatcher {
 
       // 流式回复
       await this._concurrencyLimiter.submit(
-        () => this._streamReply(userId, content, sessionKey, identifier, chatType),
+        () => this._streamReply(userId, content, sessionKey, identifier, chatType, fileContext),
         { userId, sessionKey, chatType }
       );
     } catch (err) {
@@ -212,7 +279,7 @@ class MessageDispatcher {
     }
   }
 
-  async _streamReply(userId, content, sessionKey, chatId, chatType) {
+  async _streamReply(userId, content, sessionKey, chatId, chatType, fileContext) {
     const mentionPrefix = (chatType === "group") ? "" : "";
     const startTime = Date.now();
     let lastPushTime = 0;
@@ -238,12 +305,46 @@ class MessageDispatcher {
         userId, // userName
         content,
         sessionKey,
-        onStreamDelta
+        onStreamDelta,
+        fileContext // 新增：文件上下文
       );
 
       // 确保最后一条推送
       if (!isFinished) {
         await this._pushStream(chatId, (chatType === "group" ? "@" + userId + " " : "") + accumulatedText, true);
+      }
+
+      // ── 新增：解析 FILE_OUTPUT 协议，发送生成的文件 ──
+      if (this.fileBroker && result) {
+        const parsed = this.fileBroker.parseFileOutputs(result);
+        if (parsed.files.length > 0) {
+          console.log('[Dispatcher] 发现 ' + parsed.files.length + ' 个文件输出');
+
+          // 逐个处理并发送文件（流式文本中的 FILE_OUTPUT 块作为自然指示器，不再额外推送 cleanText）
+          for (var fi = 0; fi < parsed.files.length; fi++) {
+            const f = parsed.files[fi];
+            try {
+              // 写入沙箱
+              const entry = await this.fileBroker.writeContent(f.extension, f.content, { originalName: f.filename });
+
+              // 通过 WebSocket 三阶段上传获取 media_id
+              const mediaType = this._getMediaType(f.extension);
+              const uploadResult = await this.wsClient.uploadMedia(entry.sandboxPath, mediaType);
+
+              // 发送文件/图片消息到 WeCom
+              await this._sendReply(chatId, uploadResult.media_id, mediaType === 'image' ? 'image' : 'file');
+
+              console.log('[Dispatcher] 文件已发送: ' + f.filename + ' (media_id=' + uploadResult.media_id + ')');
+            } catch (fileErr) {
+              console.error('[Dispatcher] 文件输出处理失败: ' + f.filename + ': ' + fileErr.message);
+              // 失败时回退到 markdown 附注告知用户
+              try {
+                var fallbackNote = '\n\n⚠️ 文件 `' + f.filename + '` 发送失败: ' + fileErr.message;
+                await this._pushStream(chatId, (chatType === "group" ? "@" + userId + " " : "") + fallbackNote, true);
+              } catch (e) { /* ignore */ }
+            }
+          }
+        }
       }
 
       const latency = Date.now() - startTime;
@@ -288,7 +389,9 @@ class MessageDispatcher {
     }
   }
 
-  async _sendReply(chatId, text) {
+  async _sendReply(chatId, text, msgType) {
+    msgType = msgType || 'markdown';
+
     // 发送冷却
     if (this._isDuplicateSend(chatId, text)) {
       console.log(`⏭️ 跳过重复发送: chatId=${chatId.substring(0, 12)}`);
@@ -296,7 +399,7 @@ class MessageDispatcher {
     }
 
     try {
-      await this.wsClient.sendReply(chatId, 'markdown', text);
+      await this.wsClient.sendReply(chatId, msgType, text);
       this._recordSend(chatId, text);
     } catch (e) {
       console.error(`[Dispatcher] 发送失败: ${e.message}`);
@@ -311,6 +414,16 @@ class MessageDispatcher {
       }
     }
     return null;
+  }
+
+  /**
+   * 根据文件扩展名判断 WeCom 媒体类型
+   * @returns {'image'|'file'}
+   */
+  _getMediaType(extension) {
+    var imageExts = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'];
+    var ext = (extension || '').toLowerCase();
+    return imageExts.indexOf(ext) !== -1 ? 'image' : 'file';
   }
 
   _isAtBot(content) {

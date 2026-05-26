@@ -57,6 +57,14 @@ const DEFAULTS = {
   // 并发控制
   maxConcurrent: parseInt(process.env.MAX_CONCURRENT) || 3,
   queueSize: parseInt(process.env.QUEUE_SIZE) || 50,
+
+  // FileBroker 沙箱配置
+  sandboxDir: process.env.SANDBOX_DIR || '/tmp/wecom-sandbox',
+  fileTtlMs: parseInt(process.env.FILE_TTL_MS) || 300000,
+  maxFileSize: parseInt(process.env.MAX_FILE_SIZE) || 10485760,
+  allowedFileExtensions: process.env.ALLOWED_FILE_EXTENSIONS
+    ? process.env.ALLOWED_FILE_EXTENSIONS.split(',').map(function(s) { return s.trim(); }).filter(Boolean)
+    : null, // null 表示使用 FileBroker 内置默认值
 };
 
 function loadConfig() {
