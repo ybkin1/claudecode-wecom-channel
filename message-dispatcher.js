@@ -88,7 +88,7 @@ class MessageDispatcher {
     this._recentInbound = new Map(); // "chattype+from+hash" → timestamp
     this._inboundDedupWindow = 10000; // 10s 内容去重窗口
 
-    // 并发控制器（限制同时处理的请求数，超出的排队）
+    // 并发控制器
     this._concurrencyLimiter = new ConcurrencyLimiter({
       maxConcurrent: config.maxConcurrent || 3,
       queueSize: config.queueSize || 50,
@@ -177,43 +177,43 @@ class MessageDispatcher {
   // ─── 内部方法 ───
 
   async _dispatchText(userId, content, chatType, identifier, msgId) {
-    // 群聊每人独立线程，私聊每人独立线程
     const sessionKey = SessionManager.makeKey(chatType, identifier, userId);
 
     // 并发锁：同一会话同时只处理一条消息
     if (this._processingSessions.has(sessionKey)) {
-      console.log(` 会话 ${sessionKey} 正在处理中，跳过`);
+      console.log(`⏳ 会话 ${sessionKey} 正在处理中，跳过`);
       return;
     }
 
     this._processingSessions.add(sessionKey);
 
     try {
-      // 检查指令（指令不走并发队列，立即回复）
+      // 检查指令
       const commandResult = this._checkCommand(content.trim(), sessionKey);
       if (commandResult) {
         await this._sendReply(identifier, commandResult);
         return;
       }
 
-      // 通过并发控制器排队处理
+      // 流式回复
       await this._concurrencyLimiter.submit(
-        () => this._streamReply(userId, content, sessionKey, identifier),
+        () => this._streamReply(userId, content, sessionKey, identifier, chatType),
         { userId, sessionKey, chatType }
       );
     } catch (err) {
       console.error(`[Dispatcher] 处理失败: ${err.message}`);
-      if (err.message.includes('队列已满')) {
-        await this._sendReply(identifier, ` 当前请求较多，请稍后再试`);
+      if (err.message.includes("队列已满")) {
+        await this._sendReply(identifier, "当前请求较多，请稍后再试");
       } else {
-        await this._sendReply(identifier, `❌ 处理失败: ${err.message}`);
+        await this._sendReply(identifier, "处理失败，请稍后再试");
       }
     } finally {
       this._processingSessions.delete(sessionKey);
     }
   }
 
-  async _streamReply(userId, content, sessionKey, chatId) {
+  async _streamReply(userId, content, sessionKey, chatId, chatType) {
+    const mentionPrefix = (chatType === "group") ? "" : "";
     const startTime = Date.now();
     let lastPushTime = 0;
     let accumulatedText = '';
@@ -229,11 +229,10 @@ class MessageDispatcher {
       if (now - lastPushTime < this.config.streamThrottleMs) return;
       lastPushTime = now;
 
-      await this._pushStream(chatId, accumulatedText, isFinished);
+      await this._pushStream(chatId, (chatType === "group" ? "@" + userId + " " : "") + accumulatedText, isFinished);
     };
 
     try {
-      // userId 作为显示名（企业微信不提供真实姓名）
       const result = await this.orchestrator.handleMessage(
         userId,
         userId, // userName
@@ -244,16 +243,15 @@ class MessageDispatcher {
 
       // 确保最后一条推送
       if (!isFinished) {
-        await this._pushStream(chatId, accumulatedText, true);
+        await this._pushStream(chatId, (chatType === "group" ? "@" + userId + " " : "") + accumulatedText, true);
       }
 
       const latency = Date.now() - startTime;
       console.log(`[Dispatcher] 回复完成: chatId=${chatId}, latency=${latency}ms`);
 
     } catch (err) {
-      if (!accumulatedText) {
-        await this._sendReply(chatId, `❌ 回复失败: ${err.message}`);
-      }
+      // 错误统一由 _dispatchText 处理，此处只负责抛出
+      // 避免重复发送错误消息给用户
       throw err;
     }
   }
@@ -316,8 +314,9 @@ class MessageDispatcher {
   }
 
   _isAtBot(content) {
+    console.log('[DEBUG _isAtBot] botName=' + JSON.stringify(this.config.botName) + ', content_preview=' + content.substring(0, 50));
     if (!this.config.botName) return true; // 没有配置名字，不过滤
-    // 匹配 @机器人名字 或 @智算秘书 等
+    // 匹配 @yb_claudecode 等
     const atPattern = new RegExp(`@${this.config.botName}`);
     return atPattern.test(content);
   }

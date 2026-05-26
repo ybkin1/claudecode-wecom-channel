@@ -1,3 +1,13 @@
+
+// 全局异常处理 — 防止 unhandledRejection 导致静默崩溃
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[FATAL] unhandledRejection:', reason?.message || reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] uncaughtException:', err.message);
+  process.exit(1);
+});
+
 /**
  * Claude ↔ 企业微信 双向聊天代理
  *
@@ -29,6 +39,8 @@ const { loadConfig } = require('./config.js');
 
 // ─── 启动入口 ───
 
+let wsClient;
+
 async function main() {
   const config = loadConfig();
 
@@ -46,7 +58,7 @@ async function main() {
   // 初始化核心组件
   const sessionManager = new SessionManager({ ttlMs: 2 * 60 * 60 * 1000 }); // 2h 过期
   const orchestrator = new ClaudeOrchestrator(config, sessionManager);
-  const wsClient = new WeComWsClient(config);
+  wsClient = new WeComWsClient(config);
   const dispatcher = new MessageDispatcher(wsClient, orchestrator, config);
 
   // 绑定回调
@@ -59,6 +71,18 @@ async function main() {
   console.log('📡 正在连接企业微信...');
   await wsClient.connect();
 }
+
+
+process.on('SIGINT', () => {
+  console.log('[Shutdown] 收到 SIGINT，正在关闭...');
+  if (typeof wsClient !== "undefined" && wsClient) wsClient.disconnect();
+  process.exit(0);
+});
+process.on('SIGTERM', () => {
+  console.log('[Shutdown] 收到 SIGTERM，正在关闭...');
+  if (typeof wsClient !== "undefined" && wsClient) wsClient.disconnect();
+  process.exit(0);
+});
 
 main().catch((err) => {
   console.error('❌ 启动失败:', err.message);
