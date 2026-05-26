@@ -89,6 +89,9 @@ class MessageDispatcher {
     this._recentInbound = new Map(); // "chattype+from+hash" → timestamp
     this._inboundDedupWindow = 10000; // 10s 内容去重窗口
 
+    // 待处理文件上下文（文件消息不触发 Claude 调用，仅注入上下文给下一条文字消息）
+    this._pendingFileContexts = new Map(); // sessionKey → contextMsg
+
     // 并发控制器
     this._concurrencyLimiter = new ConcurrencyLimiter({
       maxConcurrent: config.maxConcurrent || 3,
@@ -228,15 +231,13 @@ class MessageDispatcher {
         fileInfo.mimeHint
       );
 
-      // 3. 构建 Claude 上下文消息（作为 fileContext 注入，不混入用户消息）
+      // 3. 构建 Claude 上下文消息
       const contextMsg = this.fileBroker.buildFileContextMessage(fileEntry);
 
-      // 4. 转发为文本消息给 Claude（contextMsg 作为独立 fileContext 注入，promptText 仅为指令）
-      const promptText = chatType === 'group'
-        ? '请查看上面系统消息中的文件内容，并向用户回复你的分析结果。'
-        : '请查看上面系统消息中的文件内容。';
-
-      await this._dispatchText(userId, promptText, chatType, identifier, msgId, contextMsg);
+      // 4. 存储为待处理文件上下文（不触发 Claude 调用，等待下一条文字消息携带）
+      const sessionKey = SessionManager.makeKey(chatType, identifier, userId);
+      this._pendingFileContexts.set(sessionKey, contextMsg);
+      console.log('[Dispatcher] 文件上下文已缓存: session=' + sessionKey + ', 等待下一条文字消息');
     } catch (err) {
       console.error('[Dispatcher] 文件处理失败: ' + err.message);
       await this._sendReply(identifier, '⚠️ 文件接收失败: ' + err.message);
@@ -246,9 +247,20 @@ class MessageDispatcher {
   async _dispatchText(userId, content, chatType, identifier, msgId, fileContext) {
     const sessionKey = SessionManager.makeKey(chatType, identifier, userId);
 
+    // 检查是否有挂起的文件上下文（文件先到达，文字紧随）
+    if (!fileContext && this._pendingFileContexts.has(sessionKey)) {
+      fileContext = this._pendingFileContexts.get(sessionKey);
+      this._pendingFileContexts.delete(sessionKey);
+      console.log('[Dispatcher] 注入挂起文件上下文: session=' + sessionKey);
+    }
+
     // 并发锁：同一会话同时只处理一条消息
     if (this._processingSessions.has(sessionKey)) {
       console.log(`⏳ 会话 ${sessionKey} 正在处理中，跳过`);
+      // 如果被跳过但有待处理的文件上下文，保留给下一次
+      if (fileContext) {
+        this._pendingFileContexts.set(sessionKey, fileContext);
+      }
       return;
     }
 
