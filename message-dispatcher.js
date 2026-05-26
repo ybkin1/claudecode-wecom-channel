@@ -163,15 +163,9 @@ class MessageDispatcher {
         return;
       }
 
-      // DEBUG: 打印完整消息体，确认 WeCom 回调格式
-      console.log('[DEBUG file-callback] chattype=' + chattype + ' msgtype=' + msgtype);
-      console.log('[DEBUG file-callback] file keys=' + JSON.stringify(Object.keys(body.file || {})));
-      console.log('[DEBUG file-callback] url=' + (body.file?.url || 'N/A'));
-      console.log('[DEBUG file-callback] response_url=' + (body.response_url || 'N/A'));
-
       const fileInfo = msgtype === 'image'
-        ? { url: body.image?.url, fileName: 'image.jpg', mimeHint: 'image/jpeg' }
-        : { url: body.file?.url, fileName: body.file?.file_name || 'file', mimeHint: '' };
+        ? { url: body.image?.url, fileName: 'image.jpg', mimeHint: 'image/jpeg', aeskey: body.image?.aeskey }
+        : { url: body.file?.url, fileName: body.file?.file_name || 'file', mimeHint: '', aeskey: body.file?.aeskey };
 
       if (!fileInfo.url) {
         console.log(`⚠️ ${msgtype} 消息缺少下载 URL`);
@@ -230,11 +224,12 @@ class MessageDispatcher {
         await this._sendReply(identifier, '📎 正在接收文件...');
       }
 
-      // 2. 下载文件到沙箱
+      // 2. 下载文件到沙箱（WeCom 文件回调携带 aeskey → 自动 AES-256-CBC 解密）
       const fileEntry = await this.fileBroker.downloadAndStore(
         fileInfo.url,
         fileInfo.fileName,
-        fileInfo.mimeHint
+        fileInfo.mimeHint,
+        fileInfo.aeskey
       );
 
       // 3. 构建 Claude 上下文消息

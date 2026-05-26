@@ -85,7 +85,10 @@ class FileBroker {
    * @param {string} [mimeHint] — MIME 类型提示（备用扩展名推断）
    * @returns {Promise<FileEntry>}
    */
-  async downloadAndStore(url, originalFilename, mimeHint) {
+  /**
+   * @param {string} [aeskey] — WeCom 文件回调中的 AES-256-CBC 解密密钥 (base64)，有则解密
+   */
+  async downloadAndStore(url, originalFilename, mimeHint, aeskey) {
     // 提取扩展名（接收场景宽松，不检查白名单）
     var extension = '';
     if (originalFilename) {
@@ -102,6 +105,12 @@ class FileBroker {
 
     try {
       var content = await this._httpDownload(url);
+
+      // WeCom 文件回调携带 aeskey → AES-256-CBC 解密
+      if (aeskey) {
+        content = this._decryptAESFile(content, aeskey);
+        console.log('[FileBroker] downloadAndStore: AES 解密完成, ' + content.length + ' bytes (原始加密 ' + (content.length + 30) + ' bytes)');
+      }
 
       // 大小限制检查
       if (content.length > this.maxFileSize) {
@@ -470,6 +479,58 @@ class FileBroker {
     }, this.fileTtlMs);
 
     this._ttlTimers.set(absolutePath, timer);
+  }
+
+  // ══════════════════════════════════════════════════
+  //  AES-256-CBC 解密（WeCom 文件回调）
+  // ══════════════════════════════════════════════════
+
+  /**
+   * 解密 WeCom 智能机器人回调中的加密文件
+   *
+   * 协议：
+   * - 算法：AES-256-CBC
+   * - Key：aeskey 经 base64 解码（32 字节）
+   * - IV：Key 的前 16 字节
+   * - 填充：PKCS#7（去除尾部填充字节）
+   *
+   * @param {Buffer} encryptedData — 下载的加密数据
+   * @param {string} aeskeyBase64 — WeCom 回调中的 aeskey 字段（base64 编码）
+   * @returns {Buffer} 解密后的明文数据
+   */
+  _decryptAESFile(encryptedData, aeskeyBase64) {
+    // 1. 解码 AES Key（base64 → 32 字节 Buffer）
+    var keyBytes = Buffer.from(aeskeyBase64, 'base64');
+    if (keyBytes.length !== 32) {
+      throw new Error('AES key 长度异常: ' + keyBytes.length + ' bytes (期望 32)');
+    }
+
+    // 2. IV 取 key 前 16 字节（WeCom 协议规定）
+    var iv = keyBytes.slice(0, 16);
+
+    // 3. AES-256-CBC 解密
+    var decipher = crypto.createDecipheriv('aes-256-cbc', keyBytes, iv);
+    decipher.setAutoPadding(false); // 手动处理 PKCS#7
+
+    var decrypted = Buffer.concat([
+      decipher.update(encryptedData),
+      decipher.final(),
+    ]);
+
+    // 4. 去除 PKCS#7 填充（最后一个字节的值 = 填充字节数）
+    var padLength = decrypted[decrypted.length - 1];
+    if (padLength > 0 && padLength <= 32) {
+      // 验证所有填充字节是否一致
+      var valid = true;
+      for (var i = decrypted.length - padLength; i < decrypted.length; i++) {
+        if (decrypted[i] !== padLength) { valid = false; break; }
+      }
+      if (valid) {
+        decrypted = decrypted.slice(0, decrypted.length - padLength);
+      }
+    }
+
+    return decrypted;
   }
 
   // ══════════════════════════════════════════════════
