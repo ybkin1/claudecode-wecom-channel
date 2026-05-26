@@ -25,6 +25,18 @@ class ConcurrencyLimiter {
    */
   submit(taskFn, context = {}) {
     return new Promise((resolve, reject) => {
+      // A-04: 排队任务超时保护 (2分钟)
+      var queueTimer = setTimeout(() => {
+        var idx = self._queue.indexOf(entry);
+        if (idx !== -1) {
+          self._queue.splice(idx, 1);
+          reject(new Error('排队超时 (2min)'));
+        }
+      }, 120000);
+      var origReject = reject;
+      reject = function(err) { clearTimeout(queueTimer); origReject(err); };
+      var origResolve = resolve;
+      resolve = function(val) { clearTimeout(queueTimer); origResolve(val); };
       // 检查队列是否已满
       if (this._queue.length >= this.queueSize) {
         this._totalRejected++;

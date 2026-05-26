@@ -201,7 +201,18 @@ class EmlParser {
         var b = buf[i];
         if ((b >= 32 && b < 127) || b === 9 || b === 10 || b === 13 || b > 127) printable++;
       }
-      return (printable / len > 0.85) ? buf.toString('utf8') : buf;
+      if (printable / len <= 0.85) return buf; // 明显的二进制数据
+      // L-1: 增加 UTF-8 合法性验证，避免乱码
+      try {
+        var decoded = buf.toString('utf8');
+        // 检查替换字符 U+FFFD 的比例
+        var ff = 0;
+        for (var j = 0; j < decoded.length && j < 5000; j++) {
+          if (decoded.charCodeAt(j) === 0xFFFD) ff++;
+        }
+        if (ff / Math.min(decoded.length, 5000) > 0.05) return buf; // >5% 替换字符 → 二进制
+        return decoded;
+      } catch(e) { return buf; }
     }
 
     if (enc === 'quoted-printable') {

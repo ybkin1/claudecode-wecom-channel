@@ -227,7 +227,9 @@ class ClaudeOrchestrator {
     if (!text) return '';
     return text
       .replace(/[\u200B-\u200D\uFEFF]/g, '')
-      .replace(/\[?\s*(SYS_USER|SYSTEM_USER|当前用户|系统用户|助手|ASSISTANT|SYSTEM|AI|BOT)\s*\]?\s*/gi, '')
+      // L-4: 仅去除对话格式标记 [XXX] 或行首标签，避免删除正文中的合法词汇
+      .replace(/\[\s*(SYS_USER|SYSTEM_USER|当前用户|系统用户)\s*\]/gi, '')
+      .replace(/^(助手|ASSISTANT|SYSTEM|AI|BOT)\s*[:：]\s*/gmi, '')
       .replace(/^(助手|ASSISTANT|SYSTEM|AI)\s*[:：]/gmi, '')
       .trim();
   }

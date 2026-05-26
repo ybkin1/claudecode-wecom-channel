@@ -164,7 +164,10 @@ class FileConverter {
 
     // 1. 找到 EOCD signature 0x06054b50 (从末尾往前搜索)
     var eocdOffset = buffer.length - 22;
-    while (eocdOffset > 0 && buffer.readUInt32LE(eocdOffset) !== 0x06054b50) {
+    // L-6: 限制 EOCD 最大回退距离 (ZIP 注释上限 65535 字节)
+    var maxBackoff = Math.min(65535, buffer.length);
+    var searchStart = Math.max(0, buffer.length - 22 - maxBackoff);
+    while (eocdOffset > searchStart && buffer.readUInt32LE(eocdOffset) !== 0x06054b50) {
       eocdOffset--;
     }
     if (eocdOffset <= 0) return results;
@@ -251,7 +254,11 @@ class FileConverter {
       var t = match[1].trim();
       if (t) texts.push(t);
     }
-    return texts.join(' ');
+    // L-3: 解码常见 XML 实体引用
+    var result = texts.join(' ');
+    var entities = { '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&apos;': "'", '&#39;': "'" };
+    result = result.replace(/&(?:amp|lt|gt|quot|apos|#39);/g, function(m) { return entities[m] || m; });
+    return result;
   }
 }
 
