@@ -45,7 +45,7 @@ const DEFAULTS = {
 
   // 行为
   systemPrompt: process.env.SYSTEM_PROMPT || '',
-  botName: process.env.BOT_NAME || 'yb_claudecode',
+  botName: process.env.BOT_NAME || 'cc-bot',
   heartbeatInterval: parseInt(process.env.HEARTBEAT_INTERVAL) || 30000,
   streamThrottleMs: parseInt(process.env.STREAM_THROTTLE_MS) || 500,
   sessionTtlMs: 2 * 60 * 60 * 1000,

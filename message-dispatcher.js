@@ -41,7 +41,7 @@ const COMMANDS = {
 };
 
 const COMMAND_RESPONSES = {
-  help: `📖 **yb_claudecode 帮助**
+  help: `📖 **cc-bot 帮助**
 
 我是你的 AI 助手，支持以下指令：
 
@@ -429,7 +429,7 @@ class MessageDispatcher {
   _isAtBot(content) {
     console.log('[DEBUG _isAtBot] botName=' + JSON.stringify(this.config.botName) + ', content_preview=' + content.substring(0, 50));
     if (!this.config.botName) return true; // 没有配置名字，不过滤
-    // 匹配 @yb_claudecode 等
+    // 匹配 @<botName> 等
     const atPattern = new RegExp(`@${this.config.botName}`);
     return atPattern.test(content);
   }

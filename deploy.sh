@@ -60,8 +60,8 @@ while [ -z "$WECOM_SECRET" ]; do
     read -p "   企业微信 Secret: " WECOM_SECRET
 done
 
-read -p "   机器人名称 [yb_claudecode]: " BOT_NAME
-BOT_NAME=${BOT_NAME:-yb_claudecode}
+read -p "   机器人名称 [cc-bot]: " BOT_NAME
+BOT_NAME=${BOT_NAME:-cc-bot}
 
 read -p "   白名单用户ID（逗号分隔，留空则允许所有用户）: " ALLOWED_USERS
 

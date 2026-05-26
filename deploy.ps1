@@ -56,8 +56,8 @@ do {
     }
 } while ([string]::IsNullOrWhiteSpace($WECOM_SECRET))
 
-$BOT_NAME = Read-Host "   机器人名称 [yb_claudecode]"
-if ([string]::IsNullOrWhiteSpace($BOT_NAME)) { $BOT_NAME = "yb_claudecode" }
+$BOT_NAME = Read-Host "   机器人名称 [cc-bot]"
+if ([string]::IsNullOrWhiteSpace($BOT_NAME)) { $BOT_NAME = "cc-bot" }
 
 $ALLOWED_USERS = Read-Host "   白名单用户ID（逗号分隔，留空则允许所有用户）"
 
