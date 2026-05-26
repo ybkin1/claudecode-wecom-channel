@@ -39,7 +39,7 @@ const CLAUDE_PATH = findClaudePath();
 console.log(`[Claude] 使用路径: ${CLAUDE_PATH}`);
 
 // 系统提示词（通过 --append-system-prompt 注入）
-const SYSTEM_PROMPT = `你是智算秘书，一个 Obsidian 知识库 AI 助手。
+const SYSTEM_PROMPT = `你是 yb_claudecode，一个 Obsidian 知识库 AI 助手。
 
 【你的身份】
 - 你是运行在 Claude Code 环境中的 AI 助手，通过 Node.js 代理接入企业微信

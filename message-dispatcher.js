@@ -41,7 +41,7 @@ const COMMANDS = {
 };
 
 const COMMAND_RESPONSES = {
-  help: `📖 **智算秘书 帮助**
+  help: `📖 **yb_claudecode 帮助**
 
 我是你的 AI 助手，支持以下指令：
 

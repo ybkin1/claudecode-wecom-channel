@@ -56,7 +56,12 @@ class WeComWsClient extends EventEmitter {
       this._ws.on('open', () => {
         console.log('✅ WebSocket 已连接');
         this.emit('connect');
-        this._subscribe();
+        // 捕获认证异常，防止 unhandled rejection
+        this._subscribe().catch(e => {
+          console.error('❌ 认证异常:', e.message);
+          // 认证失败则关闭连接触发重连
+          this._ws?.close();
+        });
       });
 
       this._ws.on('message', (data) => {
