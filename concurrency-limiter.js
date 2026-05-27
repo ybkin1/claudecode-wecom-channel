@@ -25,18 +25,6 @@ class ConcurrencyLimiter {
    */
   submit(taskFn, context = {}) {
     return new Promise((resolve, reject) => {
-      // A-04: 排队任务超时保护 (2分钟)
-      var queueTimer = setTimeout(() => {
-        var idx = this._queue.indexOf(entry);
-        if (idx !== -1) {
-          this._queue.splice(idx, 1);
-          reject(new Error('排队超时 (2min)'));
-        }
-      }, 120000);
-      var origReject = reject;
-      reject = function(err) { clearTimeout(queueTimer); origReject(err); };
-      var origResolve = resolve;
-      resolve = function(val) { clearTimeout(queueTimer); origResolve(val); };
       // 检查队列是否已满
       if (this._queue.length >= this.queueSize) {
         this._totalRejected++;
@@ -45,7 +33,7 @@ class ConcurrencyLimiter {
       }
 
       // 加入队列
-      const item = { taskFn, context, resolve, reject };
+      const item = { taskFn, context, resolve, reject, enqueuedAt: Date.now() };
       this._queue.push(item);
       this._totalQueued++;
 
@@ -67,6 +55,12 @@ class ConcurrencyLimiter {
 
     // 取出队首任务
     const item = this._queue.shift();
+    // A-04: 排队超时保护 (2分钟)
+    if (Date.now() - item.enqueuedAt > 120000) {
+      item.reject(new Error("排队超时 (2min)"));
+      this._processQueue();
+      return;
+    }
     this._active++;
 
     console.log(`[Queue] 开始执行: active=${this._active}, queued=${this._queue.length}, user=${item.context.userId || 'unknown'}`);
