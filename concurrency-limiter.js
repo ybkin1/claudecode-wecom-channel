@@ -27,9 +27,9 @@ class ConcurrencyLimiter {
     return new Promise((resolve, reject) => {
       // A-04: 排队任务超时保护 (2分钟)
       var queueTimer = setTimeout(() => {
-        var idx = self._queue.indexOf(entry);
+        var idx = this._queue.indexOf(entry);
         if (idx !== -1) {
-          self._queue.splice(idx, 1);
+          this._queue.splice(idx, 1);
           reject(new Error('排队超时 (2min)'));
         }
       }, 120000);
