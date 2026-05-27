@@ -37,8 +37,8 @@ git checkout -b feature/描述功能
 ### 2. 修改代码 + 本地测试
 
 ```bash
-# 运行单元测试
-node test-file-broker.js
+# 在开发环境直接修改并测试
+# 测试文件功能：@bot 发图片/文件/邮件附件
 ```
 
 ### 3. 部署到开发环境
@@ -91,12 +91,14 @@ ssh claude_aly "cd /opt/wecom-chat-agent && git pull && \
 |---|--------|------|------|
 | 1 | 接收图片 | 私聊发一张 JPG/PNG | Claude 用 Read 读取并描述 |
 | 2 | 接收文件 | 私聊发 .txt/.log | Claude 用 Read 读取并总结 |
-| 3 | 文字+文件同时到达 | 同时发文字和文件 | 两次消息合并为一个上下文 |
-| 4 | 生成 JSON | @bot "生成一份测试 JSON" | 收到 file 消息 |
-| 5 | 生成 CSV | @bot "生成 CSV 数据" | 收到 file 消息 |
-| 6 | 非法扩展名 | @bot "生成 .exe" | FILE_OUTPUT 被过滤 |
-| 7 | TTL 清理 | 等 5 分钟 | `ls /tmp/wecom-sandbox/` 为空 |
-| 8 | 路径安全 | — | 自动拦截（代码内置） |
+| 3 | 接收 Office 文档 | 私聊发 .docx/.xlsx/.pptx | 自动转换为文本后注入上下文 |
+| 4 | 接收 EML 邮件 | 私聊发 .eml 邮件 | 解析邮件正文+附件，注入上下文 |
+| 5 | 文字+文件同时到达 | 同时发文字和文件 | 两次消息合并为一个上下文 |
+| 6 | 生成 JSON | @bot "生成一份测试 JSON" | 收到 file 消息 |
+| 7 | 生成 CSV | @bot "生成 CSV 数据" | 收到 file 消息 |
+| 8 | 非法扩展名 | @bot "生成 .exe" | FILE_OUTPUT 被过滤 |
+| 9 | TTL 清理 | 等 5 分钟 | `ls /tmp/wecom-sandbox/` 为空 |
+| 10 | 路径安全 | — | 自动拦截（代码内置） |
 
 ## 环境对照表
 

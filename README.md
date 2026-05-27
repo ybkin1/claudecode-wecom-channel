@@ -610,17 +610,25 @@ tail -100 /var/log/wecom-chat-agent/error.log
 
 ```
 wecom-chat-agent/
-├── main.js                  # 入口，组件装配
-├── wecom-ws-client.js       # WebSocket 客户端（连接、认证、心跳、重连）
-├── claude-orchestrator.js   # Claude CLI 编排器（spawn 子进程、流式读取）
-├── message-dispatcher.js    # 消息分发器（去重、@过滤、指令、排队、推送）
-├── session-manager.js       # 会话管理（内存存储、TTL 过期）
-├── concurrency-limiter.js   # 并发控制器（FIFO 队列）
-├── config.js                # 配置加载（.env / config.json / 环境变量）
+├── main.js                    # 入口，组件装配
+├── wecom-ws-client.js         # WebSocket 客户端（连接、认证、心跳、重连）
+├── claude-orchestrator.js     # Claude CLI 编排器（spawn 子进程、流式读取、E2BIG 防护）
+├── message-dispatcher.js      # 消息分发器（去重、@过滤、指令、排队、推送、竞态防护）
+├── session-manager.js         # 会话管理（内存存储、TTL 过期）
+├── concurrency-limiter.js     # 并发控制器（FIFO 队列 + TTL 超时保护）
+├── file-broker.js             # FileBroker 安全沙箱（文件下载、AES 解密、EML 解析）
+├── file-converter.js          # Office 文档格式转换（.docx→.md / .xlsx→.csv / .pptx→.txt）
+├── eml-parser.js              # EML 邮件解析（MIME 解码、附件提取）
+├── config.js                  # 配置加载（.env / config.json / 环境变量）
+├── deploy.sh                  # Linux 自动部署脚本
+├── deploy.ps1                 # Windows 自动部署脚本
 ├── package.json
-├── ecosystem.config.js      # PM2 部署配置
-├── .env.example             # 环境变量模板
-└── README.md                # 本文档
+├── ecosystem.config.example.js  # PM2 部署配置模板（无密钥）
+├── .env.example               # 环境变量模板
+├── settings.json              # Claude Code 模型配置
+├── README.md                  # 本文档
+├── DEPLOY.md                  # 部署说明书
+└── WORKFLOW.md                # 开发工作流
 ```
 
 ### 安全注意事项

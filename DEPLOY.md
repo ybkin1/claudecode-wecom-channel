@@ -71,15 +71,11 @@ chmod +x deploy.sh
 
 ### 方式二：手动部署
 
-#### 1. 上传代码
+#### 1. 获取代码
 
 ```bash
-# 方式 A: git clone
-git clone <repo-url>
-cd wecom-chat-agent
-
-# 方式 B: scp 上传
-scp -r ./wecom-chat-agent user@server:/opt/
+git clone git@github.com:ybkin1/claudecode-wecom-channel.git /opt/wecom-chat-agent
+cd /opt/wecom-chat-agent
 ```
 
 #### 2. 安装依赖
@@ -110,9 +106,14 @@ PRIVATE_CHAT_ENABLED=true
 npm install -g pm2
 ```
 
-#### 5. 创建独立 PM2 实例
+#### 5. 配置 PM2
 
 ```bash
+# 从示例文件创建 PM2 配置（按需修改 API Key）
+cp ecosystem.config.example.js ecosystem.config.js
+vim ecosystem.config.js  # 修改 ANTHROPIC_API_KEY 为你的密钥
+
+# 创建独立 PM2 实例
 mkdir -p /opt/wecom-chat-agent/.pm2
 mkdir -p /var/log/wecom-chat-agent
 PM2_HOME=/opt/wecom-chat-agent/.pm2 pm2 start /opt/wecom-chat-agent/ecosystem.config.js
